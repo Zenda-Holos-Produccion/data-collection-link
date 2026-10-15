@@ -1,0 +1,33 @@
+{
+  "name": "enlace-dinamico-whatsapp",
+  "version": "0.1.0",
+  "description": "Formulario conversacional por WhatsApp: un botón configurable abre un diálogo de N campos, invita a una persona y recoge sus fotos e informe en la base que elija quien lo instala.",
+  "license": "UNLICENSED",
+  "private": false,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "files": ["dist", "README.md"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./react": { "types": "./dist/react/index.d.ts", "default": "./dist/react/index.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "prepare": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "react": "^19",
+    "typescript": "^5.6",
+    "vitest": "^4"
+  }
+}
