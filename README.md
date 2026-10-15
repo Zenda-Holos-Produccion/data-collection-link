@@ -70,6 +70,11 @@ export const seguimientoDeObra: Formulario = {
   },
   plantilla: {
     nombre: "pmu_seguimiento_obra",
+    categoria: "utility",
+    cuerpo:
+      "Hola {{1}}. Le escribimos del PMU por el seguimiento de {{2}}.\n\n" +
+      "Por este mismo chat puede enviarnos fotos y escribir qué se hizo.\n\n" +
+      "Cuando no quede nada por reportar, escriba LISTO.",
     variables: [{ campo: "nombre" }, { campo: "nota", siVacio: "una obra" }],
   },
 };
@@ -77,6 +82,41 @@ export const seguimientoDeObra: Formulario = {
 
 `siVacio` no es un adorno: **Meta rechaza una plantilla con una variable vacía**, y eso se
 descubre tarde — con la plantilla ya aprobada y el mensaje que no sale.
+
+### La plantilla la escribes tú, y por eso se comprueba
+
+Una plantilla es un texto que **Meta aprueba palabra por palabra**, con huecos `{{1}}`, `{{2}}`…
+Si tu formulario declara dos variables y la plantilla aprobada tiene tres, Meta rechaza el envío
+— y eso pasa **en producción, al invitar**, donde nadie lo ve: el caso queda creado y la persona
+nunca recibe nada. Lo que se nota, semanas después, es «ese caso no lo atendió nadie».
+
+Por eso el cuerpo se declara aquí y no solo el nombre:
+
+```ts
+import { validarPlantilla, textoParaMeta, previsualizarPlantilla } from "enlace-dinamico-whatsapp";
+
+// En una prueba, o al arrancar. Vacío es que está bien.
+expect(validarPlantilla(seguimientoDeObra)).toEqual([]);
+
+// Lo que se pega en el formulario de Meta, con qué va en cada hueco.
+console.log(textoParaMeta(seguimientoDeObra));
+
+// Lo que va a recibir la persona, para enseñárselo a quien aprueba el texto.
+previsualizarPlantilla(seguimientoDeObra, { nombre: "Armando", nota: "el bloque B" });
+```
+
+`validarPlantilla` comprueba que los huecos coincidan en número y orden con las variables, que
+cada variable salga de un campo que exista, y las reglas de forma de Meta que se conocen: no
+empezar ni terminar con una variable, no dos seguidas, el nombre en minúsculas, el cuerpo bajo
+1024 caracteres.
+
+El `cuerpo` es **opcional**, para no estorbar a quien ya tenga una plantilla aprobada por fuera.
+Pero sin él `validarPlantilla` devuelve un aviso y no comprueba nada — y conviene saber la
+diferencia entre «está bien» y «no se miró».
+
+**Lo que esto no hace:** no somete la plantilla ni comprueba que la aprobada en Meta sea esta. Si
+alguien la edita desde el panel, aquí no se entera. Comprobarlo de verdad exige la API de gestión,
+que es otro permiso y otro token.
 
 ### 2 · El botón
 

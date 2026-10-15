@@ -35,3 +35,10 @@ export {
   type Dependencias,
   type ResultadoEntrante,
 } from "./conversacion.js";
+
+export {
+  previsualizarPlantilla,
+  textoParaMeta,
+  validarPlantilla,
+  type ProblemaDePlantilla,
+} from "./plantilla.js";

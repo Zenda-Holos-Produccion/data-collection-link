@@ -90,6 +90,19 @@ export type Formulario = {
   plantilla: {
     nombre: string;
     idioma?: string;
+    /** `utility` por omisión. Ver `textoParaMeta` para por qué importa. */
+    categoria?: "utility" | "marketing" | "authentication";
+    /**
+     * El cuerpo tal como se somete a Meta, con sus huecos `{{1}}`, `{{2}}`…
+     *
+     * Es opcional para no romper a quien ya tenga una plantilla aprobada por
+     * fuera, pero conviene declararlo: sin él nadie puede comprobar que los
+     * huecos coincidan con las variables de abajo, y ese desajuste **aparece
+     * en producción al invitar** —Meta rechaza el envío, el caso queda creado
+     * y la persona nunca recibe nada—. Con el cuerpo aquí, `validarPlantilla`
+     * lo caza en una prueba.
+     */
+    cuerpo?: string;
     /**
      * Qué va en los `{{1}}`, `{{2}}`… del cuerpo aprobado, en orden, nombrando
      * la clave del campo del que sale cada uno.
