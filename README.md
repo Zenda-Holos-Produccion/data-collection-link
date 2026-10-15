@@ -1,333 +1,371 @@
 # enlace-dinamico-whatsapp
 
-Un formulario que se contesta por WhatsApp.
+Forms whose response channel is a WhatsApp conversation.
 
-Alguien de adentro llena un diálogo corto —a quién invito y para qué—, la persona invitada recibe
-un mensaje, y **el chat es el formulario**: lo que escriba y las fotos que mande quedan guardadas
-donde tú decidas.
+An **operator** — an authenticated user of the host application — creates a case through a dialog
+of N fields. The library sends an approved template to the **recipient** — an external person with
+no account — and from then on the WhatsApp thread acts as the form: the text and images they send
+are persisted to whatever storage the host application defines.
 
-Nació del [PMU de la emergencia sísmica de Cali](https://github.com/Zenda-Holos-Produccion/pmu-sismo-prod),
-para que un contratista parado en una obra pudiera entregar sus fotos sin instalar nada ni abrir
-ninguna cuenta.
+Built for the [PMU of the Cali earthquake emergency](https://github.com/Zenda-Holos-Produccion/pmu-sismo-prod),
+where recipients are contractors reporting construction progress from the field, without
+installing an application or creating credentials.
 
 ---
 
-## El modelo: dos mitades, dos autores
+## Model
 
-Confundirlas es lo que vuelve inservible una abstracción así.
+The configuration keeps two datasets apart, by author and by timing:
 
-| | quién la llena | cuándo | qué lleva |
+| config | actor | when | shape |
 |---|---|---|---|
-| **El diálogo** | quien invita | antes de que haya conversación | `campos`: los que hagan falta |
-| **El chat** | la persona invitada | a lo largo del tiempo | informe (texto) y fotos |
+| `fields` | operator | before the conversation | N typed fields |
+| `chat` | recipient | during the conversation | text (`report`) and images (`photos`) |
 
-Por eso **no existe un campo de tipo «foto» en el diálogo**: las fotos no las sube quien invita.
-Meter las dos mitades en una sola lista de campos obligaría a marcar cada uno con «¿quién lo
-llena?», que es la misma distinción escrita peor.
+There is no `photo` field type in `fields`: images are sent by the recipient over the channel, not
+by the operator through the dialog. Merging both datasets into one list would require a per-field
+discriminator expressing this same distinction less clearly.
 
-## Dónde se guarda lo decides tú
+## Persistence
 
-La librería sabe de WhatsApp y de la conversación. No sabe de Postgres, ni de Supabase, ni de S3.
-Lo que hace falta para persistir entra por dos interfaces que tú implementas:
+The scope of this package is the WhatsApp protocol and the conversation state machine. It contains
+no data access.
 
-- **`Repositorio`** — crear el caso, registrar mensajes, guardar informe y fotos, cerrar.
-- **`Almacen`** — dónde van los archivos.
+The host application implements two interfaces:
 
-Es lo que permite que el mismo formulario escriba en bases distintas.
+- **`Repository`** — case creation, message recording, report and image persistence, closing.
+- **`Storage`** — binary writes.
 
-## Instalación
+## Installation
 
 ```bash
 npm install github:Zenda-Holos-Produccion/enlace-dinamico-whatsapp
 ```
 
-No está publicado en npm: se instala desde git. El repositorio es **público**, así que no hace
-falta ninguna credencial — ni en tu máquina, ni en CI, ni dentro de una imagen de Docker. Eso fue
-deliberado: una dependencia privada obliga a meter un token en cada construcción, y es una forma
-nueva de que falle un despliegue.
+Not published to npm; installed from git. The repository is **public**, so no credentials are
+required — on a workstation, in CI, or inside a Docker image. That was deliberate: a private
+dependency requires a token in every build and introduces a new deployment failure mode.
 
-## Configuración
+Requires Node 20+. React is an optional peer dependency, needed only for the `/react` entry point.
 
-Son tres cosas, y conviene tenerlas en archivos separados porque cambian por motivos distintos:
-el **canal** (credenciales, cambia cuando caduca un token), el **formulario** (qué se pregunta,
-cambia cuando cambia el proceso) y los **adaptadores** (dónde se guarda, casi nunca cambia).
+## Configuration
 
-### 1 · El canal: `ConfigWhatsapp`
+Three blocks with different lifecycles: the **channel** (credentials, changes on token rotation),
+the **form definition** (changes with the business process) and the **persistence adapters**
+(stable). Keep them in separate modules.
 
-Todo lo que habla con Meta recibe este objeto. No lo lee de variables de entorno por su cuenta —
-eso lo decide quien instala, que puede sacarlo de donde quiera:
+### Channel: `WhatsAppConfig`
+
+Every function that talks to the Graph API receives this object. The library does not read
+environment variables; resolving configuration is the host application's responsibility.
 
 ```ts
-// lib/whatsapp-config.ts
-import type { ConfigWhatsapp } from "enlace-dinamico-whatsapp";
+import type { WhatsAppConfig } from "enlace-dinamico-whatsapp";
 
-export function configWhatsapp(): ConfigWhatsapp {
+export function whatsappConfig(): WhatsAppConfig {
   return {
     token: process.env.WHATSAPP_TOKEN ?? "",
-    telefonoId: process.env.WHATSAPP_PHONE_ID ?? "",
-    secretoDeAplicacion: process.env.WHATSAPP_APP_SECRET,
-    tokenDeVerificacion: process.env.WHATSAPP_VERIFY_TOKEN,
-    version: process.env.WHATSAPP_API_VERSION,   // opcional, por omisión v21.0
-    indicativo: "57",                            // Colombia. 52 México, 34 España…
+    phoneNumberId: process.env.WHATSAPP_PHONE_ID ?? "",
+    appSecret: process.env.WHATSAPP_APP_SECRET,
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN,
+    version: process.env.WHATSAPP_API_VERSION,  // optional, defaults to v21.0
+    countryCode: "57",
   };
 }
 ```
 
-| campo | qué es | de dónde sale |
+| field | description | source |
 |---|---|---|
-| `token` | Token **permanente** de usuario de sistema | Business Settings → System users → Generate token, con `whatsapp_business_messaging`, `whatsapp_business_management` y `business_management` |
-| `telefonoId` | El **id** del número emisor, no el número | Panel de la app → WhatsApp → API Setup |
-| `secretoDeAplicacion` | Verifica la firma de los webhooks | Panel de la app → Settings → Basic → App Secret |
-| `tokenDeVerificacion` | Lo inventas tú al registrar el webhook | Lo pones igual en los dos lados |
-| `version` | Versión de la Graph API | Meta retira versiones cada par de años |
-| `indicativo` | Prefijo del país, sin `+` | Se antepone al número guardado |
+| `token` | Permanent system-user token | Business Settings → System users → Generate token, with `whatsapp_business_messaging`, `whatsapp_business_management`, `business_management` |
+| `phoneNumberId` | Phone number **id**, not the number | App dashboard → WhatsApp → API Setup |
+| `appSecret` | Verifies webhook signatures | App dashboard → Settings → Basic → App Secret |
+| `verifyToken` | Chosen when registering the webhook | Must match on both sides |
+| `version` | Graph API version | Meta retires versions every couple of years |
+| `countryCode` | Calling code without `+` | Prepended to stored numbers |
 
-**El token del panel de API Setup dura 24 horas.** Si lo usas en producción, el día que caduque
-nadie recibe su invitación y no hay error visible: solo casos que nadie atiende.
+If `token` or `phoneNumberId` are missing, send calls return `ok:false` with the reason instead of
+throwing, so the caller can record the case as undelivered. If `appSecret` is missing,
+`isValidSignature` always returns `false` — fail-closed.
 
-Si falta `token` o `telefonoId`, la librería **no revienta**: devuelve `ok:false` con el motivo y
-tú decides —anotar el caso como «no enviado» para que alguien escriba a mano, en vez de perder la
-invitación—. Si falta `secretoDeAplicacion`, `firmaValida` devuelve `false` siempre: falla
-**cerrado**, que es lo correcto en un despliegue a medio configurar.
+### Form definition
 
-### 2 · El formulario
-
-Una constante exportada. Es la **única** definición: de aquí salen los campos del diálogo, lo que
-el chat recoge, las palabras de cierre y el cuerpo de la plantilla.
+A single exported constant. It is the only definition: dialog fields, what the conversation
+collects, closing words and the template body all come from here.
 
 ```ts
-// lib/formularios/seguimiento-obra.ts
-import type { Formulario } from "enlace-dinamico-whatsapp";
+import type { Form } from "enlace-dinamico-whatsapp";
 
-export const seguimientoDeObra: Formulario = {
-  clave: "seguimiento-obra",
-  boton: "Nuevo seguimiento",
-  titulo: "Nuevo seguimiento",
-  descripcion: "Se le escribe por WhatsApp y reporta desde ese mismo chat.",
+export const siteFollowUp: Form = {
+  key: "site-followup",
+  button: "New follow-up",
+  title: "New follow-up",
+  description: "The recipient is contacted on WhatsApp and reports in that thread.",
 
-  campos: [
-    { clave: "nombre", etiqueta: "Nombre", tipo: "texto", requerido: true },
-    { clave: "telefono", etiqueta: "Número celular", tipo: "telefono", requerido: true,
-      ayuda: "Con o sin indicativo, con o sin espacios." },
-    { clave: "nota", etiqueta: "Descripción", tipo: "texto_largo",
-      marcador: "De qué obra se trata" },
+  fields: [
+    { key: "name", label: "Name", type: "text", required: true },
+    { key: "phone", label: "Mobile number", type: "phone", required: true,
+      help: "With or without country code." },
+    { key: "note", label: "Description", type: "textarea",
+      placeholder: "Which site this is about" },
   ],
 
   chat: {
-    informe: { pide: true, obligatorioParaCerrar: true },
-    fotos: { pide: true, minimoParaCerrar: 1 },
-    palabrasDeCierre: ["listo", "terminé", "fin"],   // opcional
+    report: { enabled: true, requiredToClose: true },
+    photos: { enabled: true, minToClose: 1 },
+    closingWords: ["listo", "done"],   // optional
   },
 
-  plantilla: {
-    nombre: "pmu_seguimiento_obra",
-    idioma: "es",
-    categoria: "utility",
-    cuerpo:
-      "Hola {{1}}. Le escribimos por el seguimiento de {{2}}.\n\n" +
-      "Por este mismo chat puede enviarnos fotos y escribir qué se hizo.\n\n" +
-      "Cuando no quede nada por reportar, escriba LISTO.",
-    variables: [{ campo: "nombre" }, { campo: "nota", siVacio: "una obra" }],
+  template: {
+    name: "site_followup",
+    language: "es",
+    category: "utility",
+    body:
+      "Hello {{1}}. We are contacting you about {{2}}.\n\n" +
+      "You can send photos and describe the work in this thread.\n\n" +
+      "When there is nothing left to report, reply DONE.",
+    variables: [{ field: "name" }, { field: "note", fallback: "a site" }],
   },
 };
 ```
 
-Reglas que la configuración exige y que `validarPlantilla` comprueba:
+Constraints enforced by `validateTemplate`:
 
-- **Exactamente un campo de tipo `telefono`**: es por donde se escribe. Sin él, `invitar` se niega
-  y dice por qué.
-- **`siVacio` en toda variable que salga de un campo opcional.** Meta rechaza una plantilla con una
-  variable vacía, y eso se descubre tarde: con la plantilla ya aprobada y el mensaje que no sale.
-- **No hay campo de tipo «foto».** Las fotos no las sube quien invita; las manda la persona, por el
-  chat. Eso se configura en `chat`, no en `campos`.
+- **Exactly one `phone` field.** It is the delivery address; `invite` throws without it.
+- **A `fallback` on every variable sourced from an optional field.** Meta rejects templates with
+  empty variables.
+- **No `photo` field type.** Images are configured under `chat`, not `fields`.
 
-### 3 · Los adaptadores: dónde se guarda
+### Persistence adapters
 
-Dos objetos que implementas tú. Es la frontera entre la librería y tu base, y conviene que viva en
-un solo archivo: si algún día cambias de base, se reescribe ese y nada más.
+Two objects implemented by the host. This is the boundary with your database; keeping it in one
+module means a backend change rewrites that module and nothing else.
 
 ```ts
-// lib/formularios/adaptadores.ts
-import type { Almacen, Repositorio } from "enlace-dinamico-whatsapp";
+import type { Repository, Storage } from "enlace-dinamico-whatsapp";
 
-export function repositorio(db: TuBase): Repositorio {
+export function repository(db: YourDatabase): Repository {
   return {
-    crearCaso: async ({ formulario, telefono, valores }) => { /* … */ },
-    casoAbiertoDe: async (telefono) => { /* … o null */ },
+    createCase: async ({ form, phone, values }) => { /* … */ },
+    openCaseFor: async (phone) => { /* … or null */ },
 
-    // `false` si el wamid YA estaba. Es la pieza contra los duplicados, y esa
-    // unicidad tiene que vivir en la base —un índice único—, no en memoria:
-    // dos instancias del servidor reciben reintentos distintos.
-    registrarMensaje: async (m) => { /* true si es nuevo */ },
+    // `false` when the wamid already exists. The uniqueness constraint must
+    // live in the database — a unique index — not in process memory: retries
+    // may reach a different instance.
+    recordMessage: async (m) => { /* true when new */ },
 
-    guardarInforme: async (casoId, texto) => { /* … */ },
-    guardarFoto: async (casoId, foto) => { /* … */ },
-    contar: async (casoId) => ({ informes: 0, fotos: 0 }),
-    cerrarCaso: async (casoId) => { /* … */ },
-    anotarEnvio: async (casoId, r) => { /* ok, wamid o error */ },
+    saveReport: async (caseId, text) => { /* … */ },
+    savePhoto: async (caseId, photo) => { /* … */ },
+    count: async (caseId) => ({ reports: 0, photos: 0 }),
+    closeCase: async (caseId) => { /* … */ },
+    recordDelivery: async (caseId, r) => { /* ok, wamid or error */ },
   };
 }
 
-export const almacen: Almacen = {
-  async guardar({ bytes, contentType, prefijo }) {
-    // Sube… y VUELVE A LEER el objeto para comparar tamaño y hash antes de
-    // darlo por bueno. Ver «Lo que muerde».
-    return { ruta, sha256, bytes: bytes.length };
+export const storage: Storage = {
+  async save({ bytes, contentType, prefix }) {
+    // Write… then read the object back and compare size and digest before
+    // confirming. See "File integrity".
+    return { path, sha256, bytes: bytes.length };
   },
 };
 ```
 
-`contar` decide si se puede cerrar: la librería la llama cuando la persona escribe la palabra de
-cierre y la compara con lo que pide `chat`.
+`count` determines whether a case may be closed: the library calls it when the recipient sends a
+closing word and compares the result against `chat`.
 
-## Uso
+## Usage
 
-### El botón
+### Button
 
 ```tsx
-import { BotonFormularioWhatsapp } from "enlace-dinamico-whatsapp/react";
-import { seguimientoDeObra } from "@/lib/formularios/seguimiento-obra";
+import { WhatsAppFormButton } from "enlace-dinamico-whatsapp/react";
+import { siteFollowUp } from "@/lib/forms/site-followup";
 
-<BotonFormularioWhatsapp
-  formulario={seguimientoDeObra}
-  clases={{ boton: "mi-boton", dialogo: "mi-dialogo", campo: "mi-campo" }}
-  alEnviar={async (valores) => {
-    const r = await fetch("/api/seguimiento", { method: "POST", body: JSON.stringify(valores) });
+<WhatsAppFormButton
+  form={siteFollowUp}
+  classNames={{ button: "my-button", dialog: "my-dialog", field: "my-field" }}
+  onSubmit={async (values) => {
+    const r = await fetch("/api/follow-up", { method: "POST", body: JSON.stringify(values) });
     return r.json();
   }}
 />
 ```
 
-No trae diseño a propósito: cada elemento sale con un atributo `data-edw-*` y acepta una clase por
-fuera, así que lo vistes con tu sistema sin pelearte con el suyo. Y no habla con ningún servidor:
-`alEnviar` llama a **tu** ruta, que es donde viven tus permisos.
+Unstyled by design: every element carries a `data-edw` attribute and accepts an external class
+(`button`, `overlay`, `dialog`, `title`, `description`, `field`, `label`, `help`, `error`,
+`success`, `actions`, `submit`, `cancel`). It issues no server calls — `onSubmit` targets your
+route, where your authorization lives.
 
-¿Ya tienes tu propio diálogo? Úsalo y recorre `formulario.campos` tú mismo: lo que importa es que
-los campos salgan de la configuración y no estén escritos a mano. Es lo que hace el PMU.
+If you already have a dialog component, use it and map over `form.fields` yourself. What matters is
+that fields come from the definition rather than being hard-coded.
 
-### Invitar, desde tu ruta
+### Case creation
 
 ```ts
-import { invitar } from "enlace-dinamico-whatsapp";
+import { invite } from "enlace-dinamico-whatsapp";
 
-const { caso, enviado, error } = await invitar(
-  { whatsapp: configWhatsapp(), repositorio: repositorio(db), almacen },
-  seguimientoDeObra,
-  valores,
+const { case: created, sent, error } = await invite(
+  { whatsapp: whatsappConfig(), repository: repository(db), storage },
+  siteFollowUp,
+  values,
 );
-// 201 aunque `enviado` sea false: el caso QUEDÓ creado. Decir lo contrario
-// hace que alguien lo cree otra vez.
+// Respond 201 even when `sent` is false: the case was created. Reporting
+// otherwise leads operators to create it twice.
 ```
 
-### El webhook
+### Webhook
 
 ```ts
 import {
-  extraerMensajes, firmaValida, procesarEntrante, respuestaDeVerificacion,
+  extractMessages, isValidSignature, processInbound, verifyChallenge,
 } from "enlace-dinamico-whatsapp";
 
-const deps = { whatsapp: configWhatsapp(), repositorio: repositorio(db), almacen,
-  acuses: {
-    recibido: ({ conFoto }) => conFoto ? "Recibida y guardada." : "Anotado.",
-    faltaParaCerrar: (f) => f.fotos > 0 ? "Antes de cerrar, mándeme una foto." : "Cuénteme qué se hizo.",
-    cerrado: () => "Cerrado. Gracias.",
-  } };
+const deps = {
+  whatsapp: whatsappConfig(),
+  repository: repository(db),
+  storage,
+  replies: {
+    received: ({ withPhoto }) => withPhoto ? "Photo stored." : "Noted.",
+    missingToClose: (m) => m.photos > 0 ? "Please send at least one photo first." : "Please describe the work first.",
+    closed: () => "Follow-up closed. Thank you.",
+  },
+};
 
-export async function GET(peticion: Request) {
-  const r = respuestaDeVerificacion(configWhatsapp(), new URL(peticion.url).searchParams);
-  return r.ok ? new Response(r.reto) : new Response("no", { status: 403 });
+export async function GET(request: Request) {
+  const r = verifyChallenge(whatsappConfig(), new URL(request.url).searchParams);
+  return r.ok ? new Response(r.challenge) : new Response("no", { status: 403 });
 }
 
-export async function POST(peticion: Request) {
-  const cfg = configWhatsapp();
-  const crudo = await peticion.text();                       // CRUDO, sin parsear
-  if (!firmaValida(cfg, crudo, peticion.headers.get("x-hub-signature-256"))) {
-    return new Response("firma inválida", { status: 403 });
+export async function POST(request: Request) {
+  const cfg = whatsappConfig();
+  const raw = await request.text();                       // RAW, unparsed
+  if (!isValidSignature(cfg, raw, request.headers.get("x-hub-signature-256"))) {
+    return new Response("invalid signature", { status: 403 });
   }
-  for (const m of extraerMensajes(JSON.parse(crudo))) {
+  for (const m of extractMessages(JSON.parse(raw))) {
     try {
-      await procesarEntrante(deps, seguimientoDeObra, m);
+      await processInbound(deps, siteFollowUp, m);
     } catch (e) {
-      console.error(e);   // uno malo no puede dejar sin procesar a los demás
+      console.error(e);   // one bad message must not block the rest
     }
   }
-  return Response.json({ ok: true });                        // SIEMPRE 200
+  return Response.json({ ok: true });                     // ALWAYS 200
 }
 ```
 
-`acuses` es opcional: sin él no se le contesta nada a la persona. Van como texto libre, así que
-solo funcionan dentro de la ventana de 24 horas que ella abrió al escribir — que es exactamente
-cuando se usan.
+`replies` is optional. They are sent as free-form text, which is valid only inside the 24-hour
+window the recipient opens by replying — which is exactly when they are used.
 
-### Comprobar la plantilla antes de que falle en producción
+### Template validation
 
 ```ts
-import { validarPlantilla, textoParaMeta, previsualizarPlantilla } from "enlace-dinamico-whatsapp";
+import { validateTemplate, templateForMeta, previewTemplate } from "enlace-dinamico-whatsapp";
 
-expect(validarPlantilla(seguimientoDeObra)).toEqual([]);   // vacío es que está bien
-console.log(textoParaMeta(seguimientoDeObra));             // para pegar en el formulario de Meta
-previsualizarPlantilla(seguimientoDeObra, { nombre: "Armando", nota: "el bloque B" });
+expect(validateTemplate(siteFollowUp)).toEqual([]);   // empty means consistent
+templateForMeta(siteFollowUp);                        // payload for Meta's form
+previewTemplate(siteFollowUp, { name: "Armando", note: "block B" });
 ```
 
-`validarPlantilla` comprueba que los huecos coincidan en número y orden con las variables, que
-cada variable salga de un campo que exista, y las reglas de forma de Meta que se conocen: no
-empezar ni terminar con una variable, no dos seguidas, el nombre en minúsculas, el cuerpo bajo
-1024 caracteres.
+`validateTemplate` checks placeholder count and ordering against the declared variables, that each
+variable reads an existing field, and the documented Meta formatting rules: no leading or trailing
+placeholder, no adjacent placeholders, lowercase name, body under 1024 characters.
 
-El `cuerpo` es **opcional**, para no estorbar a quien ya tenga una plantilla aprobada por fuera.
-Pero sin él `validarPlantilla` devuelve un aviso y no comprueba nada — y conviene saber la
-diferencia entre «está bien» y «no se miró».
+`body` is optional so an externally approved template still works, but then `validateTemplate`
+reports `no_body` and checks nothing — "unchecked" must be distinguishable from "valid".
 
-**Lo que esto no hace:** no somete la plantilla ni comprueba que la aprobada en Meta sea esta. Si
-alguien la edita desde el panel, aquí no se entera. Comprobarlo de verdad exige la API de gestión,
-que es otro permiso y otro token.
+**Out of scope:** this does not submit the template, nor verify that the approved one matches.
+Editing it from the Meta console is not detected here; that requires the management API.
 
 ---
 
-## Lo que muerde, y por qué está así
+## Platform constraints
 
-**La firma es la única puerta.** El webhook es una URL pública que escribe en tu base y no tiene
-sesión que la proteja: quien llama es Meta, no una persona. Sin comprobar la firma, cualquiera que
-conozca la dirección puede inventar respuestas. Y se calcula sobre el **cuerpo crudo**: si parseas
-el JSON y lo vuelves a serializar para firmarlo, un espacio tumba la comprobación.
+These design decisions follow from Cloud API limits and from failure modes observed in production.
+They are documented here because they are not evident from the API surface.
 
-Si falta el secreto, `firmaValida` devuelve `false`. Falla cerrado a propósito — un despliegue a
-medio configurar es justo cuando tienta dejarlo pasar «por ahora».
+### Signature verification
 
-**Meta reintenta.** Si tu webhook no responde `200` a tiempo, la misma entrega llega otra vez. Por
-eso `registrarMensaje` devuelve `false` cuando el `wamid` ya estaba, y por eso esa unicidad tiene
-que vivir en tu base y no en memoria: dos instancias del servidor reciben reintentos distintos.
-Y por eso respondes `200` incluso cuando algo falló al procesar — reintentar lo ya guardado no
-arregla nada.
+The webhook endpoint is public and writes to the database. No session protects it: the caller is
+Meta, not a user. HMAC-SHA256 verification of `X-Hub-Signature-256` is the only access control.
 
-**Las fotos se bajan en el acto.** La URL que da Meta está firmada y caduca en minutos. Diferirla
-a una cola es cambiar un problema por otro peor: una foto que ya no se puede recuperar.
+The digest is computed over the **raw body**. Deserializing and re-serializing the JSON yields a
+different string and verification fails.
 
-**Relee lo que subas.** `Almacen` no lo impone porque no puede, pero quien lo implemente debería
-volver a leer el objeto y comparar tamaño y hash antes de darlo por bueno. En el proyecto donde
-nació esto se perdieron 88 fotografías de 23 reportes porque el archivo se daba por subido sin
-releerlo: todo respondía 200, la fila se escribía, y el daño apareció semanas después.
+`isValidSignature` returns `false` when `appSecret` is undefined. Fail-closed is deliberate: in an
+incomplete deployment, accepting unverified payloads exposes the endpoint.
 
-**La ventana de 24 horas.** Fuera de las 24 horas desde el último mensaje de la persona, Meta solo
-admite plantillas aprobadas. Por eso la invitación es plantilla y los acuses son texto: van dentro
-de la ventana que ella abrió al escribir.
+### Idempotency
 
-**El token del panel dura 24 horas.** Usa uno permanente de usuario de sistema. Con el temporal,
-el día que caduque nadie recibe su invitación y no hay error visible: solo casos que nadie
-atiende.
+Meta retries deliveries that do not receive `200` within its timeout. The same message may arrive
+several times.
 
-**Cerrar se compara con el mensaje entero.** «Listo, mañana sigo» contiene «listo» y es lo
-contrario de un cierre: cerrar ahí le quita a la persona la forma de seguir reportando, y reabrir
-no está en su mano.
+`Repository.recordMessage` must return `false` when the `wamid` already exists. The uniqueness
+constraint has to live in the database — a unique index on `wamid` — not in process memory: with
+more than one instance, retries may reach a different one.
 
-## Datos personales
+The handler must respond `200` even when processing fails. Retrying an already-persisted message
+corrects nothing and multiplies side effects.
 
-Lo que pasa por aquí lo procesa Meta: los números, los textos y **las fotos**, que quedan en sus
-servidores hasta que se descargan. Si lo que recoges son datos de personas, eso obliga a su
-autorización de tratamiento y a un contrato de transmisión con Meta. La librería no puede
-resolverlo por ti.
+### Media download
 
-## Estado
+`GET /{media-id}` returns a signed URL that expires within minutes. The download must happen while
+handling the webhook. Deferring it to a queue introduces a failure mode where the media is no
+longer retrievable.
 
-`0.1.0`. Un solo consumidor y todavía sin correr en producción: la interfaz puede cambiar cuando
-aparezca el segundo, que es el que de verdad la decide.
+### File integrity
+
+`Storage` cannot enforce verification because it does not know the backend. Implementations should
+read the object back and compare size and digest before confirming the write.
+
+Rationale: in the originating project, 88 files across 23 submissions were lost because the binary
+body was transmitted as text, the runtime decoded it as UTF-8, and every byte ≥ 0x80 was replaced.
+The API returned `200`, the record was written with the original size, and the corruption surfaced
+only weeks later when the images were first read.
+
+### 24-hour service window
+
+Outside the 24 hours following the recipient's last message, Meta accepts approved templates only;
+free-form text is rejected.
+
+`sendTemplate` opens the conversation. `sendText` — used by `replies` — is valid only inside the
+window the recipient opens by replying.
+
+### Tokens
+
+The token exposed in the API Setup panel is valid for 24 hours. Production requires a system-user
+token with the `whatsapp_business_messaging`, `whatsapp_business_management` and
+`business_management` scopes.
+
+With an expired token, `sendTemplate` returns `ok:false` and the invitation is never delivered. The
+failure is silent from the operator's perspective unless persisted through `recordDelivery`.
+
+### Closing detection
+
+`isClosingMessage` compares the whole normalized message — diacritics and non-alphabetic
+characters removed — against the closing words. It does not match substrings.
+
+The defaults are Spanish plus `done`, because the originating deployment is Spanish-speaking. They
+are data, not code: declare `chat.closingWords` to replace them.
+
+Rationale: "Listo, mañana sigo con el segundo piso" contains a closing word and does not express
+closure. A false positive leaves the recipient without a channel to continue reporting, and
+reopening the case is not under their control.
+
+## Personal data
+
+Phone numbers, message contents and attachments are processed by Meta and remain in its
+infrastructure until downloaded.
+
+Where the use case involves personal data, this requires a lawful basis for processing and an
+international data transfer agreement with the provider. The library does not address that
+requirement.
+
+## Contributing
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Status
+
+`0.3.x`. One consumer in integration, no production traffic. The API surface may change: it is
+validated by the second use case, not the first.

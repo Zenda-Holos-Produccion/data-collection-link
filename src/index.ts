@@ -1,44 +1,45 @@
 /**
- * Formulario conversacional por WhatsApp.
+ * Forms whose response channel is a WhatsApp conversation.
  *
- * El núcleo no importa React ni Next ni ninguna base: sabe de WhatsApp y de la
- * conversación, y todo lo demás entra por `Repositorio` y `Almacen`. La parte
- * de interfaz vive aparte, en `enlace-dinamico-whatsapp/react`, para que quien
- * solo necesite el webhook no se traiga React detrás.
+ * The core imports neither React nor any database driver: it covers the
+ * WhatsApp protocol and the conversation state machine, and everything else
+ * arrives through `Repository` and `Storage`. The UI lives behind a separate
+ * entry point, `enlace-dinamico-whatsapp/react`, so consumers that only need
+ * the webhook do not pull React in.
  */
 export type {
-  Almacen,
-  CampoDialogo,
-  Caso,
-  Formulario,
-  LoQueRecogeElChat,
-  Repositorio,
-} from "./tipos.js";
+  ChatCapture,
+  Case,
+  DialogField,
+  Form,
+  Repository,
+  Storage,
+} from "./types.js";
 
 export {
-  descargarMedio,
-  enviarPlantilla,
-  enviarTexto,
-  extraerMensajes,
-  firmaValida,
-  respuestaDeVerificacion,
-  type ConfigWhatsapp,
-  type MensajeEntrante,
-  type Resultado,
+  downloadMedia,
+  extractMessages,
+  isValidSignature,
+  sendTemplate,
+  sendText,
+  verifyChallenge,
+  type InboundMessage,
+  type SendResult,
+  type WhatsAppConfig,
 } from "./whatsapp.js";
 
 export {
-  esCierre,
-  invitar,
-  normalizarTelefono,
-  procesarEntrante,
-  type Dependencias,
-  type ResultadoEntrante,
-} from "./conversacion.js";
+  invite,
+  isClosingMessage,
+  normalizePhone,
+  processInbound,
+  type Deps,
+  type InboundResult,
+} from "./conversation.js";
 
 export {
-  previsualizarPlantilla,
-  textoParaMeta,
-  validarPlantilla,
-  type ProblemaDePlantilla,
-} from "./plantilla.js";
+  previewTemplate,
+  templateForMeta,
+  validateTemplate,
+  type TemplateIssue,
+} from "./template.js";

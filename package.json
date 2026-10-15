@@ -1,7 +1,7 @@
 {
   "name": "enlace-dinamico-whatsapp",
-  "version": "0.2.0",
-  "description": "Formulario conversacional por WhatsApp: un botón configurable abre un diálogo de N campos, invita a una persona y recoge sus fotos e informe en la base que elija quien lo instala.",
+  "version": "0.3.0",
+  "description": "Forms whose response channel is a WhatsApp conversation: a configurable button opens a dialog of N fields, invites a recipient, and persists their photos and report to whatever storage the host application defines.",
   "license": "UNLICENSED",
   "private": false,
   "type": "module",

@@ -1,240 +1,250 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { CampoDialogo, Formulario } from "../tipos.js";
+import type { DialogField, Form } from "../types.js";
 
 /**
- * El botón y su diálogo, con los campos que diga la configuración.
+ * Button and dialog, rendering the fields declared by the form.
  *
- * NO TRAE DISEÑO, A PROPÓSITO
- * ---------------------------
- * Una librería que impone su estilo obliga a pelearse con ella. Cada elemento
- * sale con un atributo `data-edw-*` y acepta una clase por fuera, así que
- * quien la instala la viste con su propio sistema —variables, Tailwind, lo que
- * sea— sin sobrescribir nada.
+ * ## Unstyled by design
  *
- * QUIÉN HABLA CON EL SERVIDOR
- * ---------------------------
- * Esto no. `alEnviar` lo pone quien instala, y ahí llama a SU ruta, que es
- * donde viven sus permisos y sus secretos. Una librería de interfaz que
- * llamara sola a una API tendría que saber de autenticación, y eso no es
- * asunto suyo.
+ * A component library that imposes its own styling has to be fought. Every
+ * element carries a `data-edw` attribute and accepts an external class, so
+ * the host application styles it with its own design system.
+ *
+ * ## No server calls
+ *
+ * `onSubmit` is supplied by the host and targets its own route, where its
+ * authorization lives. A UI component issuing API calls would need to know
+ * about authentication, which is out of its scope.
  */
 
-export type ResultadoEnvio = { enviado: boolean; error?: string | null };
+export type SubmitResult = { sent: boolean; error?: string | null };
 
-export function BotonFormularioWhatsapp({
-  formulario,
-  alEnviar,
-  clases,
+export function WhatsAppFormButton({
+  form,
+  onSubmit,
+  classNames,
   children,
 }: {
-  formulario: Formulario;
-  /** Manda los valores a tu servidor y devuelve si el WhatsApp salió. */
-  alEnviar: (valores: Record<string, string>) => Promise<ResultadoEnvio>;
-  clases?: Partial<
+  form: Form;
+  /** Posts the values to your server and reports whether the message was sent. */
+  onSubmit: (values: Record<string, string>) => Promise<SubmitResult>;
+  classNames?: Partial<
     Record<
-      "boton" | "fondo" | "dialogo" | "titulo" | "descripcion" | "campo" | "etiqueta" | "ayuda" | "error" | "exito" | "acciones" | "enviar" | "cancelar",
+      | "button"
+      | "overlay"
+      | "dialog"
+      | "title"
+      | "description"
+      | "field"
+      | "label"
+      | "help"
+      | "error"
+      | "success"
+      | "actions"
+      | "submit"
+      | "cancel",
       string
     >
   >;
-  /** Un icono, o lo que vaya antes del rótulo del botón. */
+  /** Rendered before the button label — an icon, for instance. */
   children?: ReactNode;
 }) {
-  const [abierto, setAbierto] = useState(false);
-  const [valores, setValores] = useState<Record<string, string>>({});
-  const [enviando, setEnviando] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [resultado, setResultado] = useState<ResultadoEnvio | null>(null);
+  const [result, setResult] = useState<SubmitResult | null>(null);
 
-  function cerrar() {
-    setAbierto(false);
-    setValores({});
+  function close() {
+    setOpen(false);
+    setValues({});
     setError(null);
-    setResultado(null);
-    setEnviando(false);
+    setResult(null);
+    setSubmitting(false);
   }
 
-  async function enviar(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setEnviando(true);
+    setSubmitting(true);
     setError(null);
     try {
-      setResultado(await alEnviar(valores));
+      setResult(await onSubmit(values));
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "No se pudo enviar.");
+      setError(err instanceof Error ? err.message : "Submission failed.");
     } finally {
-      setEnviando(false);
+      setSubmitting(false);
     }
   }
 
   return (
     <>
-      <button type="button" data-edw="boton" className={clases?.boton} onClick={() => setAbierto(true)}>
+      <button type="button" data-edw="button" className={classNames?.button} onClick={() => setOpen(true)}>
         {children}
-        {formulario.boton}
+        {form.button}
       </button>
 
-      {abierto ? (
-        <Dialogo
-          titulo={resultado ? "Listo" : (formulario.titulo ?? formulario.boton)}
-          descripcion={resultado ? undefined : formulario.descripcion}
-          alCerrar={cerrar}
-          clases={clases}
+      {open ? (
+        <Dialog
+          title={result ? "Done" : (form.title ?? form.button)}
+          description={result ? undefined : form.description}
+          onClose={close}
+          classNames={classNames}
         >
-          {resultado ? (
-            <div data-edw="resultado">
-              {resultado.enviado ? (
-                <p data-edw="exito" className={clases?.exito}>
-                  Mensaje enviado. La persona puede responder por ese chat.
+          {result ? (
+            <div data-edw="result">
+              {result.sent ? (
+                <p data-edw="success" className={classNames?.success}>
+                  Message sent. The recipient can now reply in that thread.
                 </p>
               ) : (
                 <>
-                  <p data-edw="error" className={clases?.error}>
-                    Se guardó, pero el mensaje no se pudo enviar. Escríbale usted.
+                  <p data-edw="error" className={classNames?.error}>
+                    The case was created, but the message could not be sent.
                   </p>
-                  {/* Lo que contestó Meta, tal cual: dice si es la plantilla sin
-                      aprobar, el número fuera de la lista de pruebas o el token
-                      vencido, y sin eso no se puede arreglar. */}
-                  {resultado.error ? <p data-edw="detalle">{resultado.error}</p> : null}
+                  {/* Meta's message verbatim: it states whether the template is
+                      unapproved, the number is outside the test list, or the
+                      token expired. A generic failure cannot be acted upon. */}
+                  {result.error ? <p data-edw="detail">{result.error}</p> : null}
                 </>
               )}
-              <div data-edw="acciones" className={clases?.acciones}>
-                <button type="button" className={clases?.cancelar} onClick={cerrar}>
-                  Cerrar
+              <div data-edw="actions" className={classNames?.actions}>
+                <button type="button" className={classNames?.cancel} onClick={close}>
+                  Close
                 </button>
               </div>
             </div>
           ) : (
-            <form onSubmit={enviar} data-edw="formulario">
-              {formulario.campos.map((campo) => (
-                <Campo
-                  key={campo.clave}
-                  campo={campo}
-                  valor={valores[campo.clave] ?? ""}
-                  alCambiar={(v) => setValores((x) => ({ ...x, [campo.clave]: v }))}
-                  clases={clases}
+            <form onSubmit={submit} data-edw="form">
+              {form.fields.map((field) => (
+                <Field
+                  key={field.key}
+                  field={field}
+                  value={values[field.key] ?? ""}
+                  onChange={(v) => setValues((x) => ({ ...x, [field.key]: v }))}
+                  classNames={classNames}
                 />
               ))}
 
               {error ? (
-                <p role="alert" data-edw="error" className={clases?.error}>
+                <p role="alert" data-edw="error" className={classNames?.error}>
                   {error}
                 </p>
               ) : null}
 
-              <div data-edw="acciones" className={clases?.acciones}>
-                <button type="button" className={clases?.cancelar} onClick={cerrar}>
-                  Cancelar
+              <div data-edw="actions" className={classNames?.actions}>
+                <button type="button" className={classNames?.cancel} onClick={close}>
+                  Cancel
                 </button>
-                <button type="submit" disabled={enviando} className={clases?.enviar}>
-                  {enviando ? "Enviando…" : "Enviar por WhatsApp"}
+                <button type="submit" disabled={submitting} className={classNames?.submit}>
+                  {submitting ? "Sending…" : "Send via WhatsApp"}
                 </button>
               </div>
             </form>
           )}
-        </Dialogo>
+        </Dialog>
       ) : null}
     </>
   );
 }
 
-function Campo({
-  campo,
-  valor,
-  alCambiar,
-  clases,
+function Field({
+  field,
+  value,
+  onChange,
+  classNames,
 }: {
-  campo: CampoDialogo;
-  valor: string;
-  alCambiar: (v: string) => void;
-  clases?: Record<string, string | undefined>;
+  field: DialogField;
+  value: string;
+  onChange: (v: string) => void;
+  classNames?: Record<string, string | undefined>;
 }) {
-  const id = `edw-${campo.clave}`;
-  const comunes = {
+  const id = `edw-${field.key}`;
+  const shared = {
     id,
-    value: valor,
-    required: campo.requerido,
-    placeholder: campo.marcador,
-    maxLength: campo.maximo,
-    "aria-describedby": campo.ayuda ? `${id}-ayuda` : undefined,
-    className: clases?.campo,
-    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => alCambiar(e.target.value),
+    value,
+    required: field.required,
+    placeholder: field.placeholder,
+    maxLength: field.maxLength,
+    "aria-describedby": field.help ? `${id}-help` : undefined,
+    className: classNames?.field,
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(e.target.value),
   };
   return (
-    <div data-edw="campo" data-edw-tipo={campo.tipo}>
-      <label htmlFor={id} data-edw="etiqueta" className={clases?.etiqueta}>
-        {campo.etiqueta}
+    <div data-edw="field" data-edw-type={field.type}>
+      <label htmlFor={id} data-edw="label" className={classNames?.label}>
+        {field.label}
       </label>
-      {campo.tipo === "texto_largo" ? (
-        <textarea {...comunes} rows={3} />
+      {field.type === "textarea" ? (
+        <textarea {...shared} rows={3} />
       ) : (
-        <input {...comunes} inputMode={campo.tipo === "telefono" ? "tel" : undefined} />
+        <input {...shared} inputMode={field.type === "phone" ? "tel" : undefined} />
       )}
-      {campo.ayuda ? (
-        <p id={`${id}-ayuda`} data-edw="ayuda" className={clases?.ayuda}>
-          {campo.ayuda}
+      {field.help ? (
+        <p id={`${id}-help`} data-edw="help" className={classNames?.help}>
+          {field.help}
         </p>
       ) : null}
     </div>
   );
 }
 
-function Dialogo({
-  titulo,
-  descripcion,
-  alCerrar,
-  clases,
+function Dialog({
+  title,
+  description,
+  onClose,
+  classNames,
   children,
 }: {
-  titulo: string;
-  descripcion?: string;
-  alCerrar: () => void;
-  clases?: Record<string, string | undefined>;
+  title: string;
+  description?: string;
+  onClose: () => void;
+  classNames?: Record<string, string | undefined>;
   children: ReactNode;
 }) {
-  const caja = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
 
   /**
-   * `alCerrar` en una referencia, y el efecto SIN dependencias.
+   * `onClose` is held in a ref and the focus effect declares no dependencies.
    *
-   * Si el efecto dependiera de `alCerrar` —que quien usa esto va a pasar como
-   * función escrita en el sitio, nueva en cada render— cada tecla lo rehace y
-   * `caja.current?.focus()` se lleva el cursor al contenedor: se escribe una
-   * letra y el foco se va. Es un defecto real, visto y medido en el proyecto
-   * donde nació esta librería.
+   * Consumers pass inline arrow functions, which are a new reference on every
+   * render. With `onClose` in the dependency array the effect re-runs on each
+   * keystroke and `box.current?.focus()` moves focus out of the input being
+   * typed into — one character per focus. Observed and measured in the
+   * originating project.
    */
-  const alCerrarRef = useRef(alCerrar);
+  const onCloseRef = useRef(onClose);
   useEffect(() => {
-    alCerrarRef.current = alCerrar;
-  }, [alCerrar]);
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
-    caja.current?.focus();
-    const tecla = (e: KeyboardEvent) => {
-      if (e.key === "Escape") alCerrarRef.current();
+    box.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCloseRef.current();
     };
-    document.addEventListener("keydown", tecla);
-    return () => document.removeEventListener("keydown", tecla);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, []);
 
   return (
-    <div data-edw="fondo" className={clases?.fondo}>
+    <div data-edw="overlay" className={classNames?.overlay}>
       <div
-        ref={caja}
+        ref={box}
         role="dialog"
         aria-modal="true"
-        aria-label={titulo}
+        aria-label={title}
         tabIndex={-1}
-        data-edw="dialogo"
-        className={clases?.dialogo}
+        data-edw="dialog"
+        className={classNames?.dialog}
       >
-        <h2 data-edw="titulo" className={clases?.titulo}>
-          {titulo}
+        <h2 data-edw="title" className={classNames?.title}>
+          {title}
         </h2>
-        {descripcion ? (
-          <p data-edw="descripcion" className={clases?.descripcion}>
-            {descripcion}
+        {description ? (
+          <p data-edw="description" className={classNames?.description}>
+            {description}
           </p>
         ) : null}
         {children}
