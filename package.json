@@ -1,5 +1,5 @@
 {
-  "name": "enlace-dinamico-whatsapp",
+  "name": "whatsapp-conversational-form",
   "version": "0.3.0",
   "description": "Forms whose response channel is a WhatsApp conversation: a configurable button opens a dialog of N fields, invites a recipient, and persists their photos and report to whatever storage the host application defines.",
   "license": "UNLICENSED",

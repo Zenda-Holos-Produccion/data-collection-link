@@ -4,7 +4,7 @@
  * The core imports neither React nor any database driver: it covers the
  * WhatsApp protocol and the conversation state machine, and everything else
  * arrives through `Repository` and `Storage`. The UI lives behind a separate
- * entry point, `enlace-dinamico-whatsapp/react`, so consumers that only need
+ * entry point, `whatsapp-conversational-form/react`, so consumers that only need
  * the webhook do not pull React in.
  */
 export type {

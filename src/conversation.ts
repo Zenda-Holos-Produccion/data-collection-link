@@ -208,5 +208,5 @@ export async function processInbound(
 async function reply(deps: Deps, phone: string, text?: string): Promise<void> {
   if (!text) return;
   const r = await sendText(deps.whatsapp, { phone, text });
-  if (!r.ok) console.warn("[enlace-dinamico-whatsapp] acknowledgement not sent:", r.error);
+  if (!r.ok) console.warn("[whatsapp-conversational-form] acknowledgement not sent:", r.error);
 }

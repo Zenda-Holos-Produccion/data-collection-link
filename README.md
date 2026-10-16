@@ -1,4 +1,4 @@
-# enlace-dinamico-whatsapp
+# whatsapp-conversational-form
 
 Forms whose response channel is a WhatsApp conversation.
 
@@ -39,7 +39,7 @@ The host application implements two interfaces:
 ## Installation
 
 ```bash
-npm install github:Zenda-Holos-Produccion/enlace-dinamico-whatsapp
+npm install github:Zenda-Holos-Produccion/whatsapp-conversational-form
 ```
 
 Not published to npm; installed from git. The repository is **public**, so no credentials are
@@ -60,7 +60,7 @@ Every function that talks to the Graph API receives this object. The library doe
 environment variables; resolving configuration is the host application's responsibility.
 
 ```ts
-import type { WhatsAppConfig } from "enlace-dinamico-whatsapp";
+import type { WhatsAppConfig } from "whatsapp-conversational-form";
 
 export function whatsappConfig(): WhatsAppConfig {
   return {
@@ -93,7 +93,7 @@ A single exported constant. It is the only definition: dialog fields, what the c
 collects, closing words and the template body all come from here.
 
 ```ts
-import type { Form } from "enlace-dinamico-whatsapp";
+import type { Form } from "whatsapp-conversational-form";
 
 export const siteFollowUp: Form = {
   key: "site-followup",
@@ -141,7 +141,7 @@ Two objects implemented by the host. This is the boundary with your database; ke
 module means a backend change rewrites that module and nothing else.
 
 ```ts
-import type { Repository, Storage } from "enlace-dinamico-whatsapp";
+import type { Repository, Storage } from "whatsapp-conversational-form";
 
 export function repository(db: YourDatabase): Repository {
   return {
@@ -178,7 +178,7 @@ closing word and compares the result against `chat`.
 ### Button
 
 ```tsx
-import { WhatsAppFormButton } from "enlace-dinamico-whatsapp/react";
+import { WhatsAppFormButton } from "whatsapp-conversational-form/react";
 import { siteFollowUp } from "@/lib/forms/site-followup";
 
 <WhatsAppFormButton
@@ -202,7 +202,7 @@ that fields come from the definition rather than being hard-coded.
 ### Case creation
 
 ```ts
-import { invite } from "enlace-dinamico-whatsapp";
+import { invite } from "whatsapp-conversational-form";
 
 const { case: created, sent, error } = await invite(
   { whatsapp: whatsappConfig(), repository: repository(db), storage },
@@ -218,7 +218,7 @@ const { case: created, sent, error } = await invite(
 ```ts
 import {
   extractMessages, isValidSignature, processInbound, verifyChallenge,
-} from "enlace-dinamico-whatsapp";
+} from "whatsapp-conversational-form";
 
 const deps = {
   whatsapp: whatsappConfig(),
@@ -259,7 +259,7 @@ window the recipient opens by replying — which is exactly when they are used.
 ### Template validation
 
 ```ts
-import { validateTemplate, templateForMeta, previewTemplate } from "enlace-dinamico-whatsapp";
+import { validateTemplate, templateForMeta, previewTemplate } from "whatsapp-conversational-form";
 
 expect(validateTemplate(siteFollowUp)).toEqual([]);   // empty means consistent
 templateForMeta(siteFollowUp);                        // payload for Meta's form
