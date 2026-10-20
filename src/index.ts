@@ -41,6 +41,7 @@ export {
   isValidSecret,
   sendMessage,
   setWebhook,
+  sendWebApp,
   telegramChannel,
   telegramLink,
   type TelegramConfig,

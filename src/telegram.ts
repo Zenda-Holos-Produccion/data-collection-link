@@ -85,6 +85,36 @@ export async function sendMessage(cfg: TelegramConfig, m: { chatId: string; text
   return r.ok ? { ok: true, messageId: `${m.chatId}:${r.result.message_id}` } : { ok: false, error: r.error };
 }
 
+/**
+ * A message with a button that opens a web page inside Telegram (a Mini App).
+ *
+ * For forms too rich for a chat — a list of items, photos per section, an
+ * offline queue — the chat is only the door: the recipient taps the button and
+ * the host application's own web form opens inside Telegram, carrying the same
+ * token the link did. The form validates the token; the bot only delivers it.
+ *
+ * Telegram only opens `https` pages this way; anything else is refused here
+ * before calling the API.
+ */
+export async function sendWebApp(
+  cfg: TelegramConfig,
+  m: { chatId: string; text: string; button: { text: string; url: string } },
+): Promise<SendResult> {
+  let url: URL;
+  try {
+    url = new URL(m.button.url);
+  } catch {
+    return { ok: false, error: "The button URL is not a valid URL." };
+  }
+  if (url.protocol !== "https:") return { ok: false, error: "Telegram only opens https pages in a Mini App." };
+  const r = await call<{ message_id: number }>(cfg, "sendMessage", {
+    chat_id: m.chatId,
+    text: m.text.slice(0, TELEGRAM_TEXT_LIMIT),
+    reply_markup: { inline_keyboard: [[{ text: m.button.text.slice(0, 64), web_app: { url: url.toString() } }]] },
+  });
+  return r.ok ? { ok: true, messageId: `${m.chatId}:${r.result.message_id}` } : { ok: false, error: r.error };
+}
+
 const TYPE_BY_EXTENSION: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",

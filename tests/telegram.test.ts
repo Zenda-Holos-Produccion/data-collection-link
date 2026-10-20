@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadFile, extractUpdate, isValidSecret, sendMessage, setWebhook, telegramChannel } from "../src/telegram.js";
+import { downloadFile, extractUpdate, isValidSecret, sendMessage, sendWebApp, setWebhook, telegramChannel } from "../src/telegram.js";
 import type { Form } from "../src/types.js";
 
 /**
@@ -72,6 +72,24 @@ describe("webhook authentication", () => {
 });
 
 describe("Bot API calls", () => {
+  it("9b · sendWebApp sends the button that opens the page inside Telegram", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: { message_id: 4 } }));
+    const r = await sendWebApp(cfg, { chatId: "77", text: "Tu formulario", button: { text: "Abrir", url: "https://pmu.example/f/abc" } });
+    expect(r).toEqual({ ok: true, messageId: "77:4" });
+    expect(JSON.parse((spy.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({
+      chat_id: "77",
+      text: "Tu formulario",
+      reply_markup: { inline_keyboard: [[{ text: "Abrir", web_app: { url: "https://pmu.example/f/abc" } }]] },
+    });
+  });
+
+  it("9c · sendWebApp refuses a page that is not https, without calling Telegram", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    expect(await sendWebApp(cfg, { chatId: "77", text: "x", button: { text: "Abrir", url: "http://pmu.example/f/abc" } })).toMatchObject({ ok: false });
+    expect(await sendWebApp(cfg, { chatId: "77", text: "x", button: { text: "Abrir", url: "no es una url" } })).toMatchObject({ ok: false });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it("9 · sendMessage posts to the chat and returns <chat>:<message>", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: { message_id: 9 } }));
     expect(await sendMessage(cfg, { chatId: "77", text: "hola" })).toEqual({ ok: true, messageId: "77:9" });

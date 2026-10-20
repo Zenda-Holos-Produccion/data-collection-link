@@ -399,6 +399,14 @@ is resolved by closing the case and inviting again.
 Only private chats are read: a bot added to a group would otherwise turn every group message into a
 report.
 
+### Telegram: a rich form as a Mini App
+
+Some forms do not fit a chat: a list of items, photos per section, an offline queue. For those the
+chat is only the door. `sendWebApp(cfg, { chatId, text, button: { text, url } })` answers the
+`/start <token>` with a button that opens the host application's own web form inside Telegram,
+carrying the same token. The form validates the token; the bot only delivers it. Telegram opens only
+`https` pages this way, and `sendWebApp` refuses anything else before calling the API.
+
 ### Closing detection
 
 `isClosingMessage` compares the whole normalized message — diacritics and non-alphabetic characters
