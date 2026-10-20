@@ -1,45 +1,66 @@
 /**
- * Forms whose response channel is a WhatsApp conversation.
+ * Data collection links: a chat thread — WhatsApp or Telegram — that works as
+ * a form for someone without an account.
  *
  * The core imports neither React nor any database driver: it covers the
- * WhatsApp protocol and the conversation state machine, and everything else
- * arrives through `Repository` and `Storage`. The UI lives behind a separate
- * entry point, `whatsapp-conversational-form/react`, so consumers that only need
- * the webhook do not pull React in.
+ * channels and the conversation state machine, and everything else arrives
+ * through `Repository` and `Storage`. The UI lives behind a separate entry
+ * point, `data-collection-link/react`, so consumers that only need the webhook
+ * do not pull React in.
  */
 export type {
-  ChatCapture,
   Case,
+  ChannelName,
+  ChatCapture,
   DialogField,
   Form,
+  Invitation,
   Repository,
   Storage,
+  WhatsAppTemplate,
 } from "./types.js";
+
+export type { Channel, HeaderReader, InboundMessage, InvitationResult, Media, SendResult } from "./channel.js";
 
 export {
   downloadMedia,
   extractMessages,
   isValidSignature,
+  normalizePhone,
   sendTemplate,
   sendText,
   verifyChallenge,
-  type InboundMessage,
-  type SendResult,
+  whatsappChannel,
   type WhatsAppConfig,
 } from "./whatsapp.js";
 
 export {
+  TELEGRAM_TEXT_LIMIT,
+  downloadFile,
+  extractUpdate,
+  isValidSecret,
+  sendMessage,
+  setWebhook,
+  telegramChannel,
+  telegramLink,
+  type TelegramConfig,
+} from "./telegram.js";
+
+export {
+  hashLinkToken,
   invite,
   isClosingMessage,
-  normalizePhone,
   processInbound,
   type Deps,
   type InboundResult,
 } from "./conversation.js";
 
 export {
-  previewTemplate,
+  CHANNELS,
+  invitationVariables,
+  parseForm,
+  previewInvitation,
   templateForMeta,
-  validateTemplate,
-  type TemplateIssue,
-} from "./template.js";
+  validateForm,
+  type FormIssue,
+} from "./form.js";

@@ -1,14 +1,15 @@
 /**
- * Data model for a WhatsApp-backed conversational form.
+ * Data model for a data collection link.
+ *
+ * ## What it is
+ *
+ * An **operator** — an authenticated user of the host application — opens a
+ * case through a dialog of N fields. A **recipient** — an external person with
+ * no account — is reached on a chat channel (WhatsApp or Telegram), and from
+ * then on that chat thread is the form: the text and photos they send are
+ * persisted wherever the host decides, until they reply with a closing word.
  *
  * ## Two actors, two datasets
- *
- * An **operator** — an authenticated user of the host application — creates a
- * case through a dialog of N fields. A **recipient** — an external person with
- * no account — then replies over WhatsApp, and that thread acts as the form.
- *
- * The configuration keeps both datasets apart because they differ in author
- * and in timing:
  *
  * | config  | actor     | when                        |
  * |---------|-----------|-----------------------------|
@@ -16,17 +17,23 @@
  * | `chat`  | recipient | during the conversation     |
  *
  * There is no `photo` field type: images are sent by the recipient over the
- * channel, not by the operator through the dialog. Merging both datasets into
- * one list would require a per-field discriminator expressing this same
- * distinction less clearly.
+ * channel, not by the operator through the dialog.
+ *
+ * ## A definition is data
+ *
+ * A `Form` is plain, JSON-serializable data. It can be a constant in code,
+ * reviewed and deployed like code, or a row loaded at runtime and checked with
+ * `parseForm`. The library treats both the same. See "Static or dynamic
+ * definitions" in the README for what each costs.
  *
  * ## Persistence is out of scope
  *
- * This package covers the WhatsApp protocol and the conversation state
- * machine. Storage is supplied by the host application through `Repository`
- * and `Storage`, which is what lets the same form definition write to
- * different backends.
+ * Storage is supplied by the host application through `Repository` and
+ * `Storage`. The same definition can write to different backends.
  */
+
+/** The chat channels a form can be sent over. */
+export type ChannelName = "whatsapp" | "telegram";
 
 /** A dialog field filled in by the operator. */
 export type DialogField = {
@@ -34,9 +41,9 @@ export type DialogField = {
   key: string;
   label: string;
   /**
-   * Exactly one `phone` field is required: it is the delivery address.
-   *
-   * There is no `photo` type — see the module note above.
+   * A `phone` field is the WhatsApp delivery address: a form sent over
+   * WhatsApp needs exactly one. Telegram does not use it — the recipient is
+   * identified by the chat that opens the link.
    */
   type: "phone" | "text" | "textarea";
   required?: boolean;
@@ -67,6 +74,34 @@ export type ChatCapture = {
   closingWords?: string[];
 };
 
+/** The message that opens the conversation. */
+export type Invitation = {
+  /**
+   * Text with `{{1}}`, `{{2}}` placeholders.
+   *
+   * On WhatsApp it is the body of a Meta-approved template and has to match
+   * the approved text word for word: changing it means a new review by Meta.
+   * On Telegram it is sent as written when the recipient opens the link.
+   */
+  body: string;
+  /**
+   * Values for `{{1}}`, `{{2}}`… in order, each naming the field it reads.
+   *
+   * Meta rejects templates with empty variables, so any variable sourced from
+   * an optional field needs a `fallback`.
+   */
+  variables: { field: string; fallback?: string }[];
+};
+
+/** The Meta template that carries `invitation.body` on WhatsApp. */
+export type WhatsAppTemplate = {
+  /** Lowercase letters, digits and underscores, as registered in Meta. */
+  name: string;
+  language?: string;
+  /** Defaults to `utility`. See `templateForMeta`. */
+  category?: "utility" | "marketing" | "authentication";
+};
+
 export type Form = {
   /** Identifies this form in the repository. */
   key: string;
@@ -75,39 +110,26 @@ export type Form = {
   /** Dialog title. Falls back to `button`. */
   title?: string;
   description?: string;
+  /** Channels this form may be sent over. The first one is the default. */
+  channels: ChannelName[];
   fields: DialogField[];
   chat: ChatCapture;
-  /** The Meta-approved template used to open the conversation. */
-  template: {
-    name: string;
-    language?: string;
-    /** Defaults to `utility`. See `templateForMeta`. */
-    category?: "utility" | "marketing" | "authentication";
-    /**
-     * Body as submitted to Meta, with its `{{1}}`, `{{2}}` placeholders.
-     *
-     * Optional, so an externally approved template still works. Declaring it
-     * lets `validateTemplate` check that placeholders match the variables
-     * below; without it, a mismatch surfaces only at send time in production —
-     * Meta rejects the message, the case exists, and the recipient is never
-     * contacted.
-     */
-    body?: string;
-    /**
-     * Values for `{{1}}`, `{{2}}`… in order, each naming the field it reads.
-     *
-     * Meta rejects templates with empty variables, so any variable sourced
-     * from an optional field needs a `fallback`.
-     */
-    variables: { field: string; fallback?: string }[];
-  };
+  invitation: Invitation;
+  /** Required when `channels` includes `whatsapp`. */
+  whatsapp?: WhatsAppTemplate;
 };
 
 /** An open case, created when the operator invites someone. */
 export type Case = {
   id: string;
   form: string;
-  phone: string;
+  channel: ChannelName;
+  /**
+   * Where the recipient is reached: the phone number as stored on WhatsApp,
+   * the chat id on Telegram. `null` on Telegram until the recipient opens the
+   * link.
+   */
+  address: string | null;
   /** Dialog values, keyed by field. */
   values: Record<string, string | null>;
   status: "invited" | "in_progress" | "closed";
@@ -116,28 +138,49 @@ export type Case = {
 /**
  * Persistence, implemented by the host application.
  *
- * `recordMessage` **must return `false` when the `wamid` already exists**. That
- * is the deduplication primitive: Meta retries deliveries that do not receive
- * `200` within its timeout, and the uniqueness constraint has to live in the
- * database — a unique index on `wamid` — rather than in process memory, since
- * retries may reach a different instance.
+ * `recordMessage` **must return `false` when the message id already exists**
+ * for that channel. That is the deduplication primitive: both platforms retry
+ * webhook deliveries that do not receive `200` in time, and the uniqueness
+ * constraint has to live in the database — a unique index on channel and
+ * message id — rather than in process memory, since retries may reach a
+ * different instance.
  */
 export type Repository = {
   createCase(input: {
     form: string;
-    phone: string;
+    channel: ChannelName;
+    /** The phone on WhatsApp; `null` on Telegram until the link is opened. */
+    address: string | null;
     values: Record<string, string | null>;
+    /**
+     * Telegram: SHA-256 (hex) of the one-time token inside the link. Store the
+     * digest, never the token: the link is shown once and cannot be recovered
+     * from the database. `null` on WhatsApp.
+     */
+    linkTokenHash: string | null;
   }): Promise<Case>;
 
-  /** The open case for that phone number, or null. At most one may exist. */
-  openCaseFor(phone: string): Promise<Case | null>;
+  /** The open case for that address on that channel, or null. At most one may exist. */
+  openCaseFor(channel: ChannelName, address: string): Promise<Case | null>;
 
-  /** `false` when the `wamid` was already stored — a retry, nothing to do. */
+  /**
+   * Telegram: attaches the chat that opened the link to the case holding that
+   * token digest, and returns the case.
+   *
+   * Must be atomic and single-use: the first chat binds; a later open of the
+   * same link — forwarded to someone else — returns `null`, as does an
+   * unknown token or a closed case. A conditional update (`where address is
+   * null`) is enough. A host that only uses WhatsApp returns `null`.
+   */
+  bindCase(channel: ChannelName, linkTokenHash: string, address: string): Promise<Case | null>;
+
+  /** `false` when the message id was already stored — a retry, nothing to do. */
   recordMessage(m: {
     caseId: string | null;
-    wamid: string;
+    channel: ChannelName;
+    messageId: string;
     direction: "inbound" | "outbound";
-    type: "text" | "image" | "template" | "other";
+    type: "text" | "image" | "invitation" | "other";
     text: string | null;
     occurredAt: string | null;
   }): Promise<boolean>;
@@ -151,8 +194,14 @@ export type Repository = {
 
   closeCase(caseId: string): Promise<void>;
 
-  /** Outcome of the invitation attempt, so a failed send is not lost. */
-  recordDelivery(caseId: string, r: { ok: boolean; wamid?: string; error?: string }): Promise<void>;
+  /**
+   * Outcome of the invitation attempt, so a failed send is not lost.
+   *
+   * `delivered` is false on Telegram by design: nothing is sent until the
+   * recipient opens the link. The link itself is never passed here — it
+   * carries the token, which must not be stored.
+   */
+  recordDelivery(caseId: string, r: { ok: boolean; delivered: boolean; messageId?: string; error?: string }): Promise<void>;
 };
 
 /**

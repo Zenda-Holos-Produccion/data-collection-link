@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { DialogField, Form } from "../types.js";
+import type { ChannelName, DialogField, Form } from "../types.js";
 
 /**
  * Button and dialog, rendering the fields declared by the form.
@@ -9,7 +9,7 @@ import type { DialogField, Form } from "../types.js";
  * ## Unstyled by design
  *
  * A component library that imposes its own styling has to be fought. Every
- * element carries a `data-edw` attribute and accepts an external class, so
+ * element carries a `data-dcl` attribute and accepts an external class, so
  * the host application styles it with its own design system.
  *
  * ## No server calls
@@ -17,18 +17,33 @@ import type { DialogField, Form } from "../types.js";
  * `onSubmit` is supplied by the host and targets its own route, where its
  * authorization lives. A UI component issuing API calls would need to know
  * about authentication, which is out of its scope.
+ *
+ * ## The Telegram link is shown once
+ *
+ * On Telegram nothing is sent: the server returns a link with a one-time
+ * token, and this dialog shows it for the operator to copy and hand over. It
+ * is not stored anywhere, so closing the dialog loses it — the case can be
+ * re-invited, never the link recovered.
  */
 
-export type SubmitResult = { sent: boolean; error?: string | null };
+export type SubmitResult = { delivered: boolean; link?: string | null; error?: string | null };
 
-export function WhatsAppFormButton({
+const SEND_LABEL: Record<ChannelName, string> = {
+  whatsapp: "Send via WhatsApp",
+  telegram: "Create Telegram link",
+};
+
+export function DataCollectionButton({
   form,
+  channel = form.channels[0] ?? "whatsapp",
   onSubmit,
   classNames,
   children,
 }: {
   form: Form;
-  /** Posts the values to your server and reports whether the message was sent. */
+  /** The channel this button invites over. Defaults to the form's first. */
+  channel?: ChannelName;
+  /** Posts the values to your server and reports what the invitation produced. */
   onSubmit: (values: Record<string, string>) => Promise<SubmitResult>;
   classNames?: Partial<
     Record<
@@ -42,6 +57,7 @@ export function WhatsAppFormButton({
       | "help"
       | "error"
       | "success"
+      | "link"
       | "actions"
       | "submit"
       | "cancel",
@@ -80,7 +96,7 @@ export function WhatsAppFormButton({
 
   return (
     <>
-      <button type="button" data-edw="button" className={classNames?.button} onClick={() => setOpen(true)}>
+      <button type="button" data-dcl="button" className={classNames?.button} onClick={() => setOpen(true)}>
         {children}
         {form.button}
       </button>
@@ -93,31 +109,43 @@ export function WhatsAppFormButton({
           classNames={classNames}
         >
           {result ? (
-            <div data-edw="result">
-              {result.sent ? (
-                <p data-edw="success" className={classNames?.success}>
+            <div data-dcl="result">
+              {result.link ? (
+                <>
+                  <p data-dcl="success" className={classNames?.success}>
+                    Link created. Hand it to the recipient: it opens a Telegram chat where they report. It is
+                    shown only now, and the first account that opens it is the only one it works for.
+                  </p>
+                  <input data-dcl="link" className={classNames?.link} readOnly value={result.link} onFocus={(e) => e.currentTarget.select()} />
+                </>
+              ) : result.delivered ? (
+                <p data-dcl="success" className={classNames?.success}>
                   Message sent. The recipient can now reply in that thread.
                 </p>
               ) : (
                 <>
-                  <p data-edw="error" className={classNames?.error}>
+                  <p data-dcl="error" className={classNames?.error}>
                     The case was created, but the message could not be sent.
                   </p>
                   {/* Meta's message verbatim: it states whether the template is
                       unapproved, the number is outside the test list, or the
                       token expired. A generic failure cannot be acted upon. */}
-                  {result.error ? <p data-edw="detail">{result.error}</p> : null}
+                  {result.error ? <p data-dcl="detail">{result.error}</p> : null}
                 </>
               )}
-              <div data-edw="actions" className={classNames?.actions}>
+              <div data-dcl="actions" className={classNames?.actions}>
                 <button type="button" className={classNames?.cancel} onClick={close}>
                   Close
                 </button>
               </div>
             </div>
           ) : (
-            <form onSubmit={submit} data-edw="form">
-              {form.fields.map((field) => (
+            <form onSubmit={submit} data-dcl="form">
+              {form.fields
+                // The phone is WhatsApp's address; Telegram finds the
+                // recipient by the chat that opens the link.
+                .filter((field) => channel === "whatsapp" || field.type !== "phone" || field.required)
+                .map((field) => (
                 <Field
                   key={field.key}
                   field={field}
@@ -128,17 +156,17 @@ export function WhatsAppFormButton({
               ))}
 
               {error ? (
-                <p role="alert" data-edw="error" className={classNames?.error}>
+                <p role="alert" data-dcl="error" className={classNames?.error}>
                   {error}
                 </p>
               ) : null}
 
-              <div data-edw="actions" className={classNames?.actions}>
+              <div data-dcl="actions" className={classNames?.actions}>
                 <button type="button" className={classNames?.cancel} onClick={close}>
                   Cancel
                 </button>
                 <button type="submit" disabled={submitting} className={classNames?.submit}>
-                  {submitting ? "Sending…" : "Send via WhatsApp"}
+                  {submitting ? "Sending…" : SEND_LABEL[channel]}
                 </button>
               </div>
             </form>
@@ -160,7 +188,7 @@ function Field({
   onChange: (v: string) => void;
   classNames?: Record<string, string | undefined>;
 }) {
-  const id = `edw-${field.key}`;
+  const id = `dcl-${field.key}`;
   const shared = {
     id,
     value,
@@ -172,8 +200,8 @@ function Field({
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(e.target.value),
   };
   return (
-    <div data-edw="field" data-edw-type={field.type}>
-      <label htmlFor={id} data-edw="label" className={classNames?.label}>
+    <div data-dcl="field" data-dcl-type={field.type}>
+      <label htmlFor={id} data-dcl="label" className={classNames?.label}>
         {field.label}
       </label>
       {field.type === "textarea" ? (
@@ -182,7 +210,7 @@ function Field({
         <input {...shared} inputMode={field.type === "phone" ? "tel" : undefined} />
       )}
       {field.help ? (
-        <p id={`${id}-help`} data-edw="help" className={classNames?.help}>
+        <p id={`${id}-help`} data-dcl="help" className={classNames?.help}>
           {field.help}
         </p>
       ) : null}
@@ -229,21 +257,21 @@ function Dialog({
   }, []);
 
   return (
-    <div data-edw="overlay" className={classNames?.overlay}>
+    <div data-dcl="overlay" className={classNames?.overlay}>
       <div
         ref={box}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        data-edw="dialog"
+        data-dcl="dialog"
         className={classNames?.dialog}
       >
-        <h2 data-edw="title" className={classNames?.title}>
+        <h2 data-dcl="title" className={classNames?.title}>
           {title}
         </h2>
         {description ? (
-          <p data-edw="description" className={classNames?.description}>
+          <p data-dcl="description" className={classNames?.description}>
             {description}
           </p>
         ) : null}

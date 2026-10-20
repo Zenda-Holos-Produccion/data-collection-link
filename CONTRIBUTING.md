@@ -33,7 +33,7 @@ Types used here:
 | `build` | packaging, tsconfig, dependencies |
 | `chore` | anything else that does not reach the published package |
 
-Scopes match the module: `whatsapp`, `conversation`, `template`, `react`, `types`.
+Scopes match the module: `whatsapp`, `telegram`, `channel`, `conversation`, `form`, `react`, `types`.
 
 A breaking change is marked **both** with `!` after the type and with a `BREAKING CHANGE:` footer
 stating what consumers must change. The redundancy is intentional: the `!` is what a reader scanning

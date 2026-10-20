@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { Channel, InboundMessage, Media, SendResult } from "./channel.js";
 
 /**
- * WhatsApp Cloud API client. No SDK — plain `fetch`.
+ * WhatsApp Cloud API channel. No SDK — plain `fetch`.
  *
  * Missing configuration does not throw: calls return `ok:false` with the
  * reason so the caller can record the case as undelivered and have someone
@@ -27,8 +28,6 @@ export type WhatsAppConfig = {
 
 const BASE = "https://graph.facebook.com";
 
-export type SendResult = { ok: boolean; wamid?: string; error?: string };
-
 async function call(cfg: WhatsAppConfig, body: unknown): Promise<SendResult> {
   if (!cfg?.token || !cfg?.phoneNumberId) {
     return { ok: false, error: "WhatsApp is not configured (missing token or phoneNumberId)." };
@@ -46,13 +45,26 @@ async function call(cfg: WhatsAppConfig, body: unknown): Promise<SendResult> {
       // and a generic failure cannot be acted upon.
       return { ok: false, error: data?.error?.message ?? `HTTP ${res.status}` };
     }
-    return { ok: true, wamid: data?.messages?.[0]?.id };
+    return { ok: true, messageId: data?.messages?.[0]?.id };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : "Network failure calling WhatsApp." };
   }
 }
 
 const toE164 = (cfg: WhatsAppConfig, phone: string) => `${cfg.countryCode}${phone}`;
+
+/**
+ * Converts Meta's E.164 form to the number as stored.
+ *
+ * The country code is stripped so numbers are stored in a single
+ * representation; mixing both forms makes `openCaseFor` miss about half the
+ * lookups.
+ */
+export function normalizePhone(from: string, countryCode: string): string | null {
+  const digits = (from ?? "").replace(/\D+/g, "");
+  if (!digits) return null;
+  return digits.startsWith(countryCode) ? digits.slice(countryCode.length) : digits;
+}
 
 /** Opens the conversation. Business-initiated messages must use a template. */
 export function sendTemplate(
@@ -74,10 +86,7 @@ export function sendTemplate(
 }
 
 /** Free-form text. Only valid inside the 24-hour customer service window. */
-export function sendText(
-  cfg: WhatsAppConfig,
-  m: { phone: string; text: string },
-): Promise<SendResult> {
+export function sendText(cfg: WhatsAppConfig, m: { phone: string; text: string }): Promise<SendResult> {
   return call(cfg, {
     messaging_product: "whatsapp",
     to: toE164(cfg, m.phone),
@@ -93,10 +102,7 @@ export function sendText(
  * expires within minutes, so the download must happen while handling the
  * webhook rather than being deferred to a queue.
  */
-export async function downloadMedia(
-  cfg: WhatsAppConfig,
-  mediaId: string,
-): Promise<{ ok: true; bytes: Uint8Array; contentType: string } | { ok: false; error: string }> {
+export async function downloadMedia(cfg: WhatsAppConfig, mediaId: string): Promise<Media> {
   if (!cfg?.token) return { ok: false, error: "WhatsApp is not configured." };
   const version = cfg.version ?? "v21.0";
   try {
@@ -138,11 +144,7 @@ export async function downloadMedia(
  * Comparison is constant-time: a short-circuiting comparison leaks the digest
  * byte by byte through timing.
  */
-export function isValidSignature(
-  cfg: WhatsAppConfig,
-  rawBody: string,
-  header: string | null | undefined,
-): boolean {
+export function isValidSignature(cfg: WhatsAppConfig, rawBody: string, header: string | null | undefined): boolean {
   const secret = cfg?.appSecret;
   if (!secret || !header) return false;
   const expected = header.startsWith("sha256=") ? header.slice(7) : header;
@@ -160,26 +162,11 @@ export function verifyChallenge(
 ): { ok: true; challenge: string } | { ok: false } {
   const challenge = params.get("hub.challenge");
   const expected = cfg?.verifyToken;
-  if (
-    params.get("hub.mode") === "subscribe" &&
-    expected &&
-    params.get("hub.verify_token") === expected &&
-    challenge
-  ) {
+  if (params.get("hub.mode") === "subscribe" && expected && params.get("hub.verify_token") === expected && challenge) {
     return { ok: true, challenge };
   }
   return { ok: false };
 }
-
-export type InboundMessage = {
-  wamid: string;
-  /** E.164 without `+`, as Meta sends it. */
-  from: string;
-  type: "text" | "image" | string;
-  text?: string | null;
-  mediaId?: string | null;
-  occurredAt?: string | null;
-};
 
 /**
  * Extracts messages from Meta's payload shape: `entry[] → changes[] →
@@ -188,8 +175,10 @@ export type InboundMessage = {
  * Delivery and read receipts arrive through the same webhook under
  * `value.statuses` and are ignored: treating them as messages would create an
  * empty submission every time the recipient opens the thread.
+ *
+ * `from` is normalized with `countryCode` to the form `Case.address` stores.
  */
-export function extractMessages(payload: unknown): InboundMessage[] {
+export function extractMessages(payload: unknown, countryCode: string): InboundMessage[] {
   const out: InboundMessage[] = [];
   const root = payload as { entry?: unknown[] };
   for (const entry of root?.entry ?? []) {
@@ -204,11 +193,13 @@ export function extractMessages(payload: unknown): InboundMessage[] {
           text?: { body?: string };
           image?: { id?: string; caption?: string };
         };
-        if (!m?.id || !m?.from) continue;
+        const from = m?.from ? normalizePhone(m.from, countryCode) : null;
+        if (!m?.id || !from) continue;
         out.push({
-          wamid: m.id,
-          from: m.from,
-          type: m.type ?? "other",
+          channel: "whatsapp",
+          id: m.id,
+          from,
+          type: m.type === "text" ? "text" : m.type === "image" ? "image" : "other",
           // An image caption is text the recipient wrote to explain the
           // picture, so it is kept as the report body.
           text: m.type === "image" ? (m.image?.caption ?? null) : (m.text?.body ?? null),
@@ -220,4 +211,28 @@ export function extractMessages(payload: unknown): InboundMessage[] {
     }
   }
   return out;
+}
+
+/** The WhatsApp channel, for the conversation engine. */
+export function whatsappChannel(cfg: WhatsAppConfig): Channel {
+  return {
+    name: "whatsapp",
+    async invite({ form, address, variables }) {
+      if (!address) return { ok: false, delivered: false, error: "A WhatsApp invitation needs a phone number." };
+      if (!form.whatsapp) {
+        return { ok: false, delivered: false, error: `Form "${form.key}" declares no WhatsApp template.` };
+      }
+      const r = await sendTemplate(cfg, {
+        phone: address,
+        template: form.whatsapp.name,
+        language: form.whatsapp.language,
+        variables,
+      });
+      return { ok: r.ok, delivered: r.ok, messageId: r.messageId, error: r.error };
+    },
+    sendText: (address, text) => sendText(cfg, { phone: address, text }),
+    downloadMedia: (mediaId) => downloadMedia(cfg, mediaId),
+    verifyRequest: ({ rawBody, headers }) => isValidSignature(cfg, rawBody, headers.get("x-hub-signature-256")),
+    parse: (payload) => extractMessages(payload, cfg.countryCode),
+  };
 }

@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-conversational-form",
-  "version": "0.3.0",
-  "description": "Forms whose response channel is a WhatsApp conversation: a configurable button opens a dialog of N fields, invites a recipient, and persists their photos and report to whatever storage the host application defines.",
+  "name": "data-collection-link",
+  "version": "0.4.0",
+  "description": "Data collection links: a WhatsApp or Telegram chat that works as a form for someone without an account. The operator opens a case from a dialog of N fields defined in a template; the recipient reports text and photos in the chat, persisted to whatever storage the host application defines.",
   "license": "UNLICENSED",
   "private": false,
   "type": "module",

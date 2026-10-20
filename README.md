@@ -1,45 +1,65 @@
-# whatsapp-conversational-form
+# data-collection-link
 
-Forms whose response channel is a WhatsApp conversation.
+A **data collection link** turns a chat thread — on **WhatsApp** or **Telegram** — into a form for
+someone who has no account in your application.
 
-An **operator** — an authenticated user of the host application — creates a case through a dialog
-of N fields. The library sends an approved template to the **recipient** — an external person with
-no account — and from then on the WhatsApp thread acts as the form: the text and images they send
-are persisted to whatever storage the host application defines.
+An **operator** — an authenticated user of the host application — opens a case through a dialog of N
+fields. The **recipient** — an external person — is reached on a chat channel, and from then on that
+thread *is* the form: the text and photos they send are persisted to whatever storage the host
+application defines, until they reply with a closing word.
+
+What the dialog asks, what the chat collects, the closing words and the invitation text all come from
+one **template**: a `Form` definition, which is plain data.
 
 Built for the [PMU of the Cali earthquake emergency](https://github.com/Zenda-Holos-Produccion/pmu-sismo-prod),
-where recipients are contractors reporting construction progress from the field, without
-installing an application or creating credentials.
+where recipients are contractors and field staff reporting from a site, without installing an
+application or creating credentials. Formerly `whatsapp-conversational-form`.
 
 ---
 
 ## Model
 
-The configuration keeps two datasets apart, by author and by timing:
+The template keeps two datasets apart, by author and by timing:
 
 | config | actor | when | shape |
 |---|---|---|---|
 | `fields` | operator | before the conversation | N typed fields |
 | `chat` | recipient | during the conversation | text (`report`) and images (`photos`) |
 
-There is no `photo` field type in `fields`: images are sent by the recipient over the channel, not
-by the operator through the dialog. Merging both datasets into one list would require a per-field
-discriminator expressing this same distinction less clearly.
+There is no `photo` field type in `fields`: images are sent by the recipient over the channel, not by
+the operator through the dialog.
+
+## Channels
+
+The conversation engine is the same for both; what differs is how a conversation starts and who the
+recipient is.
+
+| | WhatsApp (Cloud API) | Telegram (Bot API) |
+|---|---|---|
+| **Who writes first** | The business, with a template | The recipient: a bot cannot write first |
+| **The invitation** | `invite` sends the approved template to a phone number | `invite` returns a `t.me/<bot>?start=<token>` link for the operator to hand over |
+| **Recipient identity** | The phone number in the dialog | The chat that opens the link — single-use: the first account binds |
+| **Invitation text** | Must match a template Meta approved, word for word; each change is reviewed again | Sent as written when the link is opened |
+| **Free-form replies** | Only inside the 24-hour window the recipient opens | Always |
+| **Setup** | Meta Business, a verified number, a system-user token, an approved template | A bot token from @BotFather and a webhook secret |
+| **Price** | Per template message sent, by category and country | None |
+| **Webhook auth** | HMAC of the raw body (`X-Hub-Signature-256`) | Shared secret header (`X-Telegram-Bot-Api-Secret-Token`) |
+
+A form lists the channels it may be sent over (`channels`), and the host decides per invitation.
 
 ## Persistence
 
-The scope of this package is the WhatsApp protocol and the conversation state machine. It contains
-no data access.
+The scope of this package is the channels and the conversation state machine. It contains no data
+access. The host application implements two interfaces:
 
-The host application implements two interfaces:
-
-- **`Repository`** — case creation, message recording, report and image persistence, closing.
+- **`Repository`** — case creation, binding a Telegram chat, message recording, report and image
+  persistence, closing.
 - **`Storage`** — binary writes.
 
 ## Installation
 
 ```bash
-npm install github:Zenda-Holos-Produccion/whatsapp-conversational-form
+npm install github:Zenda-Holos-Produccion/data-collection-link
 ```
 
 Not published to npm; installed from git. The repository is **public**, so no credentials are
@@ -50,17 +70,15 @@ Requires Node 20+. React is an optional peer dependency, needed only for the `/r
 
 ## Configuration
 
-Three blocks with different lifecycles: the **channel** (credentials, changes on token rotation),
-the **form definition** (changes with the business process) and the **persistence adapters**
-(stable). Keep them in separate modules.
+Three blocks with different lifecycles: the **channels** (credentials, change on token rotation), the
+**template** (changes with the business process) and the **persistence adapters** (stable). Keep them
+in separate modules. The library reads no environment variables; resolving configuration is the host
+application's responsibility.
 
 ### Channel: `WhatsAppConfig`
 
-Every function that talks to the Graph API receives this object. The library does not read
-environment variables; resolving configuration is the host application's responsibility.
-
 ```ts
-import type { WhatsAppConfig } from "whatsapp-conversational-form";
+import { whatsappChannel, type WhatsAppConfig } from "data-collection-link";
 
 export function whatsappConfig(): WhatsAppConfig {
   return {
@@ -72,6 +90,7 @@ export function whatsappConfig(): WhatsAppConfig {
     countryCode: "57",
   };
 }
+export const whatsapp = () => whatsappChannel(whatsappConfig());
 ```
 
 | field | description | source |
@@ -81,30 +100,55 @@ export function whatsappConfig(): WhatsAppConfig {
 | `appSecret` | Verifies webhook signatures | App dashboard → Settings → Basic → App Secret |
 | `verifyToken` | Chosen when registering the webhook | Must match on both sides |
 | `version` | Graph API version | Meta retires versions every couple of years |
-| `countryCode` | Calling code without `+` | Prepended to stored numbers |
+| `countryCode` | Calling code without `+` | Stripped from inbound numbers, prepended on send |
 
-If `token` or `phoneNumberId` are missing, send calls return `ok:false` with the reason instead of
-throwing, so the caller can record the case as undelivered. If `appSecret` is missing,
-`isValidSignature` always returns `false` — fail-closed.
-
-### Form definition
-
-A single exported constant. It is the only definition: dialog fields, what the conversation
-collects, closing words and the template body all come from here.
+### Channel: `TelegramConfig`
 
 ```ts
-import type { Form } from "whatsapp-conversational-form";
+import { telegramChannel, setWebhook, type TelegramConfig } from "data-collection-link";
+
+export function telegramConfig(): TelegramConfig {
+  return {
+    token: process.env.TELEGRAM_BOT_TOKEN ?? "",
+    username: process.env.TELEGRAM_BOT_USERNAME ?? "",   // without @
+    secretToken: process.env.TELEGRAM_WEBHOOK_SECRET,    // 1–256 chars, A-Z a-z 0-9 _ -
+  };
+}
+export const telegram = () => telegramChannel(telegramConfig());
+
+// Once, after deploying the webhook route:
+await setWebhook(telegramConfig(), "https://your.app/api/telegram/webhook");
+```
+
+| field | description | source |
+|---|---|---|
+| `token` | Bot token. Never logged: errors are scrubbed of it | @BotFather → `/newbot` |
+| `username` | The bot's username, builds the `t.me` link | @BotFather |
+| `secretToken` | Echoed by Telegram on every webhook call | Chosen by you, passed to `setWebhook` |
+
+On either channel, missing credentials do not throw: calls return `ok:false` with the reason, so the
+caller can record the case as undelivered. A missing `appSecret` or `secretToken` makes webhook
+verification return `false` — fail-closed.
+
+### Template: the `Form` definition
+
+A single definition per form. Dialog fields, what the conversation collects, closing words and the
+invitation all come from here.
+
+```ts
+import type { Form } from "data-collection-link";
 
 export const siteFollowUp: Form = {
   key: "site-followup",
   button: "New follow-up",
   title: "New follow-up",
-  description: "The recipient is contacted on WhatsApp and reports in that thread.",
+  description: "The recipient reports in a chat thread.",
+  channels: ["whatsapp", "telegram"],
 
   fields: [
     { key: "name", label: "Name", type: "text", required: true },
-    { key: "phone", label: "Mobile number", type: "phone", required: true,
-      help: "With or without country code." },
+    { key: "phone", label: "Mobile number", type: "phone",
+      help: "With or without country code. Needed on WhatsApp only." },
     { key: "note", label: "Description", type: "textarea",
       placeholder: "Which site this is about" },
   ],
@@ -115,49 +159,55 @@ export const siteFollowUp: Form = {
     closingWords: ["listo", "done"],   // optional
   },
 
-  template: {
-    name: "site_followup",
-    language: "es",
-    category: "utility",
+  invitation: {
     body:
       "Hello {{1}}. We are contacting you about {{2}}.\n\n" +
       "You can send photos and describe the work in this thread.\n\n" +
       "When there is nothing left to report, reply DONE.",
     variables: [{ field: "name" }, { field: "note", fallback: "a site" }],
   },
+
+  // Only when `channels` includes "whatsapp": the template Meta approved with that body.
+  whatsapp: { name: "site_followup", language: "es", category: "utility" },
 };
 ```
 
-Constraints enforced by `validateTemplate`:
+Rules enforced by `validateForm` (and by `parseForm` for data):
 
-- **Exactly one `phone` field.** It is the delivery address; `invite` throws without it.
-- **A `fallback` on every variable sourced from an optional field.** Meta rejects templates with
-  empty variables.
+- **Placeholders match variables**: `{{1}}`, `{{2}}`… in order, as many as there are variables, each
+  reading a declared field.
+- **A `fallback` on every variable sourced from an optional field.** Meta rejects empty variables, and
+  an empty one reads as a gap on Telegram too.
+- **WhatsApp**: exactly one `phone` field — the delivery address —, a `whatsapp.name`, a body under
+  1024 characters that does not start or end with a variable nor put two side by side.
+- **Telegram**: no phone needed; body under 4096 characters.
 - **No `photo` field type.** Images are configured under `chat`, not `fields`.
 
 ### Persistence adapters
 
-Two objects implemented by the host. This is the boundary with your database; keeping it in one
-module means a backend change rewrites that module and nothing else.
-
 ```ts
-import type { Repository, Storage } from "whatsapp-conversational-form";
+import type { Repository, Storage } from "data-collection-link";
 
 export function repository(db: YourDatabase): Repository {
   return {
-    createCase: async ({ form, phone, values }) => { /* … */ },
-    openCaseFor: async (phone) => { /* … or null */ },
+    createCase: async ({ form, channel, address, values, linkTokenHash }) => { /* … */ },
+    openCaseFor: async (channel, address) => { /* … or null */ },
 
-    // `false` when the wamid already exists. The uniqueness constraint must
-    // live in the database — a unique index — not in process memory: retries
-    // may reach a different instance.
+    // Telegram: attach the chat to the case whose link token digest matches.
+    // Single-use: a conditional update `where address is null` — the first
+    // chat wins; the link forwarded to someone else gets null.
+    bindCase: async (channel, linkTokenHash, address) => { /* … or null */ },
+
+    // `false` when (channel, messageId) already exists. The uniqueness
+    // constraint must live in the database — a unique index — not in process
+    // memory: retries may reach a different instance.
     recordMessage: async (m) => { /* true when new */ },
 
     saveReport: async (caseId, text) => { /* … */ },
     savePhoto: async (caseId, photo) => { /* … */ },
     count: async (caseId) => ({ reports: 0, photos: 0 }),
     closeCase: async (caseId) => { /* … */ },
-    recordDelivery: async (caseId, r) => { /* ok, wamid or error */ },
+    recordDelivery: async (caseId, r) => { /* ok, delivered, messageId or error */ },
   };
 }
 
@@ -170,147 +220,152 @@ export const storage: Storage = {
 };
 ```
 
-`count` determines whether a case may be closed: the library calls it when the recipient sends a
-closing word and compares the result against `chat`.
-
 ## Usage
 
 ### Button
 
 ```tsx
-import { WhatsAppFormButton } from "whatsapp-conversational-form/react";
+import { DataCollectionButton } from "data-collection-link/react";
 import { siteFollowUp } from "@/lib/forms/site-followup";
 
-<WhatsAppFormButton
+<DataCollectionButton
   form={siteFollowUp}
-  classNames={{ button: "my-button", dialog: "my-dialog", field: "my-field" }}
+  channel="telegram"            // defaults to the form's first channel
+  classNames={{ button: "my-button", dialog: "my-dialog", field: "my-field", link: "my-link" }}
   onSubmit={async (values) => {
     const r = await fetch("/api/follow-up", { method: "POST", body: JSON.stringify(values) });
-    return r.json();
+    return r.json();            // { delivered, link?, error? }
   }}
 />
 ```
 
-Unstyled by design: every element carries a `data-edw` attribute and accepts an external class
-(`button`, `overlay`, `dialog`, `title`, `description`, `field`, `label`, `help`, `error`,
-`success`, `actions`, `submit`, `cancel`). It issues no server calls — `onSubmit` targets your
-route, where your authorization lives.
-
-If you already have a dialog component, use it and map over `form.fields` yourself. What matters is
-that fields come from the definition rather than being hard-coded.
+Unstyled by design: every element carries a `data-dcl` attribute and accepts an external class. It
+issues no server calls — `onSubmit` targets your route, where your authorization lives. On Telegram it
+shows the returned link once, for the operator to copy.
 
 ### Case creation
 
 ```ts
-import { invite } from "whatsapp-conversational-form";
+import { invite } from "data-collection-link";
 
-const { case: created, sent, error } = await invite(
-  { whatsapp: whatsappConfig(), repository: repository(db), storage },
-  siteFollowUp,
-  values,
-);
-// Respond 201 even when `sent` is false: the case was created. Reporting
+const deps = { channels: { whatsapp: whatsapp(), telegram: telegram() }, repository: repository(db), storage };
+
+const { case: created, delivered, link, error } = await invite(deps, siteFollowUp, values, "telegram");
+// WhatsApp: `delivered` says whether Meta accepted the template.
+// Telegram: nothing is sent; `link` carries a one-time token. It is returned
+// once and never stored — only its SHA-256 is. Show it to the operator.
+// Respond 201 even when `delivered` is false: the case exists, and reporting
 // otherwise leads operators to create it twice.
 ```
 
 ### Webhook
 
+One route per channel, the same body for both:
+
 ```ts
-import {
-  extractMessages, isValidSignature, processInbound, verifyChallenge,
-} from "whatsapp-conversational-form";
+import { processInbound, verifyChallenge, type Channel } from "data-collection-link";
 
-const deps = {
-  whatsapp: whatsappConfig(),
-  repository: repository(db),
-  storage,
-  replies: {
-    received: ({ withPhoto }) => withPhoto ? "Photo stored." : "Noted.",
-    missingToClose: (m) => m.photos > 0 ? "Please send at least one photo first." : "Please describe the work first.",
-    closed: () => "Follow-up closed. Thank you.",
-  },
-};
-
-export async function GET(request: Request) {
-  const r = verifyChallenge(whatsappConfig(), new URL(request.url).searchParams);
-  return r.ok ? new Response(r.challenge) : new Response("no", { status: 403 });
-}
-
-export async function POST(request: Request) {
-  const cfg = whatsappConfig();
-  const raw = await request.text();                       // RAW, unparsed
-  if (!isValidSignature(cfg, raw, request.headers.get("x-hub-signature-256"))) {
-    return new Response("invalid signature", { status: 403 });
+async function handle(channel: Channel, request: Request) {
+  const raw = await request.text();                         // RAW, unparsed
+  if (!channel.verifyRequest({ rawBody: raw, headers: request.headers })) {
+    return new Response("invalid", { status: 403 });
   }
-  for (const m of extractMessages(JSON.parse(raw))) {
+  let payload: unknown;
+  try { payload = JSON.parse(raw); } catch { return Response.json({ ok: true }); }
+  for (const m of channel.parse(payload)) {
     try {
       await processInbound(deps, siteFollowUp, m);
     } catch (e) {
       console.error(e);   // one bad message must not block the rest
     }
   }
-  return Response.json({ ok: true });                     // ALWAYS 200
+  return Response.json({ ok: true });                       // ALWAYS 200
 }
+
+// app/api/whatsapp/webhook/route.ts
+export const POST = (r: Request) => handle(whatsapp(), r);
+export async function GET(request: Request) {               // Meta's registration challenge
+  const r = verifyChallenge(whatsappConfig(), new URL(request.url).searchParams);
+  return r.ok ? new Response(r.challenge) : new Response("no", { status: 403 });
+}
+
+// app/api/telegram/webhook/route.ts
+export const POST = (r: Request) => handle(telegram(), r);
 ```
 
-`replies` is optional. They are sent as free-form text, which is valid only inside the 24-hour
-window the recipient opens by replying — which is exactly when they are used.
+`replies` in `deps` are optional: `received`, `missingToClose`, `closed` and, for Telegram,
+`linkInvalid` (the link was already opened by another account, its case is closed, or it is unknown).
+When a Telegram link is opened, the engine binds the chat and sends the rendered invitation as the
+first message.
 
-### Template validation
+### Validation and preview
 
 ```ts
-import { validateTemplate, templateForMeta, previewTemplate } from "whatsapp-conversational-form";
+import { validateForm, parseForm, previewInvitation, templateForMeta } from "data-collection-link";
 
-expect(validateTemplate(siteFollowUp)).toEqual([]);   // empty means consistent
-templateForMeta(siteFollowUp);                        // payload for Meta's form
-previewTemplate(siteFollowUp, { name: "Armando", note: "block B" });
+expect(validateForm(siteFollowUp)).toEqual([]);         // in a test: empty means usable
+parseForm(rowFromDatabase);                             // { ok, form } or { ok: false, issues }
+previewInvitation(siteFollowUp, { name: "Armando", note: "block B" });
+templateForMeta(siteFollowUp);                          // payload for Meta's template form
 ```
 
-`validateTemplate` checks placeholder count and ordering against the declared variables, that each
-variable reads an existing field, and the documented Meta formatting rules: no leading or trailing
-placeholder, no adjacent placeholders, lowercase name, body under 1024 characters.
+---
 
-`body` is optional so an externally approved template still works, but then `validateTemplate`
-reports `no_body` and checks nothing — "unchecked" must be distinguishable from "valid".
+## Static or dynamic definitions
 
-**Out of scope:** this does not submit the template, nor verify that the approved one matches.
-Editing it from the Meta console is not detected here; that requires the management API.
+A `Form` is data, so it can live in two places. The library supports both; the cost is in the host.
+
+**Static — a constant in code** (how the originating project does it). A change is a commit: the
+template is reviewed like code, `validateForm` runs in a test, and a broken definition never reaches
+production. The cost of each change is a deploy.
+
+**Dynamic — a row in a database**, edited at runtime by an operator. The library side is
+`parseForm`: it refuses malformed or rule-breaking data with the reasons, and drops properties outside
+the model. Everything else falls on the host:
+
+| | What it takes |
+|---|---|
+| **Versions** | Each edit creates a new, immutable version, and each case records the version it was opened with. Otherwise editing a form changes the meaning of past cases: a removed field disappears from old answers. The webhook loads the case's version instead of a constant. |
+| **Answers as data** | Dialog values stored as JSON keyed by field, not as typed columns. Lists, filters and exports become generic, and anything computed from a field must know its key across versions. |
+| **An editor** | Fields, chat requirements and invitation text, with a live `previewInvitation` and `parseForm` before saving; permissions over who edits; an audit of who changed what. |
+| **WhatsApp approval** | The invitation body *is* the approved template. Changing it at runtime means submitting a new template through Meta's management API (a different token scope and the WhatsApp Business Account id), waiting for review — minutes to a day or more —, handling a rejection or a recategorization to Marketing (priced higher), and refusing to invite with that version until it is approved. Telegram has none of this. |
+| **Personal data** | An editor can add a field asking for an ID number. In code that goes through review; at runtime it needs an approval step or a closed list of what may be asked. |
+
+Two middle grounds cover most needs at a fraction of the cost: **dynamic fields with fixed
+invitations** (a few approved WhatsApp bodies whose variables are filled from the case, so nothing
+goes back to Meta), or **dynamic definitions on Telegram only**.
 
 ---
 
 ## Platform constraints
 
-These design decisions follow from Cloud API limits and from failure modes observed in production.
+These design decisions follow from platform limits and from failure modes observed in production.
 They are documented here because they are not evident from the API surface.
 
-### Signature verification
+### Webhook authentication
 
-The webhook endpoint is public and writes to the database. No session protects it: the caller is
-Meta, not a user. HMAC-SHA256 verification of `X-Hub-Signature-256` is the only access control.
-
-The digest is computed over the **raw body**. Deserializing and re-serializing the JSON yields a
-different string and verification fails.
-
-`isValidSignature` returns `false` when `appSecret` is undefined. Fail-closed is deliberate: in an
-incomplete deployment, accepting unverified payloads exposes the endpoint.
+The webhook endpoint is public and writes to the database. No session protects it: the caller is the
+platform, not a user. On WhatsApp the HMAC-SHA256 of `X-Hub-Signature-256` is the only access control,
+computed over the **raw body** — deserializing and re-serializing the JSON yields a different string
+and verification fails. On Telegram it is the `X-Telegram-Bot-Api-Secret-Token` header, compared in
+constant time. Both return `false` when their secret is not configured: fail-closed.
 
 ### Idempotency
 
-Meta retries deliveries that do not receive `200` within its timeout. The same message may arrive
-several times.
+Both platforms retry deliveries that do not receive `200` in time. The same message may arrive several
+times. `Repository.recordMessage` must return `false` when `(channel, messageId)` already exists, with
+the uniqueness constraint in the database. The handler must respond `200` even when processing fails:
+retrying an already-persisted message corrects nothing and multiplies side effects.
 
-`Repository.recordMessage` must return `false` when the `wamid` already exists. The uniqueness
-constraint has to live in the database — a unique index on `wamid` — not in process memory: with
-more than one instance, retries may reach a different one.
-
-The handler must respond `200` even when processing fails. Retrying an already-persisted message
-corrects nothing and multiplies side effects.
+Telegram message ids are unique per chat, so the library uses `<chat id>:<message id>`.
 
 ### Media download
 
-`GET /{media-id}` returns a signed URL that expires within minutes. The download must happen while
-handling the webhook. Deferring it to a queue introduces a failure mode where the media is no
-longer retrievable.
+WhatsApp returns a signed URL that expires within minutes; Telegram a file path that is valid for at
+least an hour, for files up to 20 MB. In both cases the download happens while handling the webhook:
+deferring it to a queue introduces a failure mode where the media is no longer retrievable. Telegram
+serves files as `application/octet-stream`, so the type comes from the extension — verify magic bytes
+before trusting either.
 
 ### File integrity
 
@@ -322,43 +377,63 @@ body was transmitted as text, the runtime decoded it as UTF-8, and every byte �
 The API returned `200`, the record was written with the original size, and the corruption surfaced
 only weeks later when the images were first read.
 
-### 24-hour service window
+### WhatsApp: 24-hour service window and tokens
 
 Outside the 24 hours following the recipient's last message, Meta accepts approved templates only;
-free-form text is rejected.
+free-form text is rejected. `invite` opens the conversation with the template; `replies` are valid
+only inside the window the recipient opens by replying — which is exactly when they are used.
 
-`sendTemplate` opens the conversation. `sendText` — used by `replies` — is valid only inside the
-window the recipient opens by replying.
+The token in the API Setup panel is valid for 24 hours. Production requires a system-user token with
+the `whatsapp_business_messaging`, `whatsapp_business_management` and `business_management` scopes.
+With an expired token, the invitation is never delivered; persist it through `recordDelivery` or the
+failure is silent.
 
-### Tokens
+### Telegram: the link is a single-use credential
 
-The token exposed in the API Setup panel is valid for 24 hours. Production requires a system-user
-token with the `whatsapp_business_messaging`, `whatsapp_business_management` and
-`business_management` scopes.
+The token travels inside the link — through whatever the operator uses to hand it over, and through
+Telegram. Three things limit what a leaked link can do: only its SHA-256 is stored, binding is
+single-use (the first account to open it owns the case; a second account is told the link is no
+longer valid), and once bound, only that chat can report. A link that reached the wrong person first
+is resolved by closing the case and inviting again.
 
-With an expired token, `sendTemplate` returns `ok:false` and the invitation is never delivered. The
-failure is silent from the operator's perspective unless persisted through `recordDelivery`.
+Only private chats are read: a bot added to a group would otherwise turn every group message into a
+report.
 
 ### Closing detection
 
-`isClosingMessage` compares the whole normalized message — diacritics and non-alphabetic
-characters removed — against the closing words. It does not match substrings.
-
-The defaults are Spanish plus `done`, because the originating deployment is Spanish-speaking. They
-are data, not code: declare `chat.closingWords` to replace them.
-
-Rationale: "Listo, mañana sigo con el segundo piso" contains a closing word and does not express
-closure. A false positive leaves the recipient without a channel to continue reporting, and
-reopening the case is not under their control.
+`isClosingMessage` compares the whole normalized message — diacritics and non-alphabetic characters
+removed — against the closing words. It does not match substrings: "Listo, mañana sigo con el segundo
+piso" contains a closing word and does not express closure. A false positive leaves the recipient
+without a channel to continue reporting, and reopening the case is not under their control. The
+defaults are Spanish plus `done`; declare `chat.closingWords` to replace them.
 
 ## Personal data
 
-Phone numbers, message contents and attachments are processed by Meta and remain in its
-infrastructure until downloaded.
+Phone numbers, message contents and attachments are processed by the platform — Meta or Telegram —
+and stay in its infrastructure: on WhatsApp until downloaded; on Telegram, messages to a bot are cloud
+chats, not end-to-end encrypted, kept on Telegram's servers.
 
 Where the use case involves personal data, this requires a lawful basis for processing and an
 international data transfer agreement with the provider. The library does not address that
-requirement.
+requirement. Ask only what the case needs: what is not collected cannot leak.
+
+## Migrating from `whatsapp-conversational-form` 0.3
+
+- Package and import path: `data-collection-link`; React: `DataCollectionButton` (was
+  `WhatsAppFormButton`), attributes `data-dcl` (were `data-edw`); `SubmitResult` is
+  `{ delivered, link?, error? }` (was `{ sent, error? }`).
+- `Form.template` splits in two: `invitation: { body, variables }` (now required, for every channel)
+  and `whatsapp: { name, language, category }`. Add `channels: ["whatsapp"]`.
+- `validateTemplate` → `validateForm`; `previewTemplate` → `previewInvitation`.
+- `Deps.whatsapp: WhatsAppConfig` → `Deps.channels: { whatsapp: whatsappChannel(cfg) }`. `invite`
+  returns `delivered` (was `sent`) and, on Telegram, `link`.
+- `Case.phone` → `Case.channel` and `Case.address`.
+- `Repository`: `createCase` receives `channel`, `address` and `linkTokenHash`; `openCaseFor(channel,
+  address)`; new `bindCase` (return `null` if you only use WhatsApp); `recordMessage` receives
+  `channel` and `messageId` (was `wamid`), and its type `invitation` (was `template`);
+  `recordDelivery` receives `{ ok, delivered, messageId?, error? }`.
+- `extractMessages(payload, countryCode)` returns messages with `channel`, `id` and `from` already
+  normalized. Prefer `channel.parse` and `channel.verifyRequest`.
 
 ## Contributing
 
@@ -367,5 +442,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Status
 
-`0.3.x`. One consumer in integration, no production traffic. The API surface may change: it is
-validated by the second use case, not the first.
+`0.4.x`. One consumer in integration on WhatsApp, no production traffic; the Telegram channel is
+covered by tests and has not met a real bot yet. The API surface may change: it is validated by the
+second use case, not the first.
