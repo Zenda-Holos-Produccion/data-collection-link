@@ -1,6 +1,6 @@
 {
   "name": "data-collection-link",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Data collection links: a WhatsApp or Telegram chat that works as a form for someone without an account. The operator opens a case from a dialog of N fields defined in a template; the recipient reports text and photos in the chat, persisted to whatever storage the host application defines.",
   "license": "UNLICENSED",
   "private": false,

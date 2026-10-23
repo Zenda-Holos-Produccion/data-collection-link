@@ -4,6 +4,7 @@ import {
   downloadFile,
   extractUpdate,
   isValidSecret,
+  renderTelegram,
   requestLocation,
   sendChoices,
   sendMessage,
@@ -272,6 +273,50 @@ describe("buttons and locations", () => {
     );
     const r = await answerCallback(cfg, "q1");
     expect(r).toEqual({ ok: false, error: "Bad Request: query is too old and response timeout expired" });
+  });
+});
+
+describe("rendering a guided conversation", () => {
+  it("20 · each output is one call, in order", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => Response.json({ ok: true, result: spy.mock.calls.length === 1 ? true : { message_id: spy.mock.calls.length } }));
+    const r = await renderTelegram(cfg, "77", [
+      { kind: "ack", callbackId: "q1" },
+      { kind: "text", text: "Gracias", removeKeyboard: true },
+      { kind: "location", text: "¿Dónde?", button: "Compartir", alternatives: [] },
+      { kind: "choices", text: "¿Cuál?", rows: [[{ text: "A", data: "x:a" }]] },
+      { kind: "webapp", text: "Falta", button: { text: "Abrir", url: "https://pmu.example/f/t" } },
+    ]);
+    expect(r).toEqual({ ok: true, messageIds: ["77:2", "77:3", "77:4", "77:5"] });
+    expect(spy.mock.calls.map(([url]) => String(url).split("/").pop())).toEqual([
+      "answerCallbackQuery",
+      "sendMessage",
+      "sendMessage",
+      "sendMessage",
+      "sendMessage",
+    ]);
+    expect(body(spy, 1).reply_markup).toEqual({ remove_keyboard: true });
+    expect(body(spy, 2).reply_markup.keyboard[0][0]).toEqual({ text: "Compartir", request_location: true });
+    expect(body(spy, 3).reply_markup.inline_keyboard).toEqual([[{ text: "A", callback_data: "x:a" }]]);
+  });
+
+  it("21 · a tap answered too late is logged and the rest is sent; a failed message stops the rest", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ ok: false, description: "Bad Request: query is too old" }, { status: 400 }))
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { message_id: 8 } }))
+      .mockResolvedValueOnce(Response.json({ ok: false, description: "Forbidden: bot was blocked by the user" }, { status: 403 }));
+    const r = await renderTelegram(cfg, "77", [
+      { kind: "ack", callbackId: "q1" },
+      { kind: "text", text: "Uno" },
+      { kind: "text", text: "Dos" },
+      { kind: "text", text: "Tres" },
+    ]);
+    expect(r).toEqual({ ok: false, messageIds: ["77:8"], error: "Forbidden: bot was blocked by the user" });
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not answered"), "Bad Request: query is too old");
   });
 });
 

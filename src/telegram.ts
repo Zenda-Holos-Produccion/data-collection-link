@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Channel, InboundMessage, Media, SendResult } from "./channel.js";
+import type { GuidedOutput } from "./guided.js";
 
 /**
  * Telegram Bot API channel. No SDK — plain `fetch`.
@@ -364,6 +365,42 @@ export function extractUpdate(payload: unknown): InboundMessage[] {
     return [{ ...base, type: "text", text: m.text }];
   }
   return [{ ...base, type: "other", text: null }];
+}
+
+/**
+ * Sends what a guided conversation step returned (`advance`, `startGuided`),
+ * in order, one Bot API call per output.
+ *
+ * Stops at the first message that fails and reports it: the rest would read
+ * out of context. A button tap that cannot be answered — Telegram refuses an
+ * answer after some seconds — is logged and does not stop the rest, since the
+ * conversation already moved on. `messageIds` are those sent, for the host to
+ * record if it records outbound messages.
+ */
+export async function renderTelegram(
+  cfg: TelegramConfig,
+  chatId: string,
+  outputs: GuidedOutput[],
+): Promise<{ ok: boolean; messageIds: string[]; error?: string }> {
+  const messageIds: string[] = [];
+  for (const o of outputs) {
+    if (o.kind === "ack") {
+      const r = await answerCallback(cfg, o.callbackId);
+      if (!r.ok) console.warn("[data-collection-link] button tap not answered:", r.error);
+      continue;
+    }
+    const r =
+      o.kind === "text"
+        ? await sendMessage(cfg, { chatId, text: o.text, removeKeyboard: o.removeKeyboard })
+        : o.kind === "choices"
+          ? await sendChoices(cfg, { chatId, text: o.text, rows: o.rows })
+          : o.kind === "location"
+            ? await requestLocation(cfg, { chatId, text: o.text, button: o.button, alternatives: o.alternatives })
+            : await sendWebApp(cfg, { chatId, text: o.text, button: o.button });
+    if (!r.ok) return { ok: false, messageIds, error: r.error };
+    if (r.messageId) messageIds.push(r.messageId);
+  }
+  return { ok: true, messageIds };
 }
 
 /** The Telegram channel, for the conversation engine. */
