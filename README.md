@@ -116,7 +116,8 @@ export function telegramConfig(): TelegramConfig {
 }
 export const telegram = () => telegramChannel(telegramConfig());
 
-// Once, after deploying the webhook route:
+// Once, after deploying the webhook route — and again after upgrading to 0.6,
+// which also asks for button taps (`callback_query`):
 await setWebhook(telegramConfig(), "https://your.app/api/telegram/webhook");
 ```
 
@@ -311,6 +312,101 @@ templateForMeta(siteFollowUp);                          // payload for Meta's te
 
 ---
 
+## Guided conversations
+
+On Telegram, a conversation can also be a questionnaire: the bot asks one thing at a time, with
+buttons, and checks each answer before the next question. A `GuidedTemplate` lists the steps; it is a
+separate engine from the free-form one above, and does no I/O of its own.
+
+| step | asks for | answer |
+|---|---|---|
+| `location` | the device's location, or a text alternative; a host `resolver` can name the place for the recipient to `confirm` | `{ status, latitude, longitude, accuracyMeters, place }` |
+| `choice` | one of fixed `options`, or of a `catalog` the host passes by name, in `columns` | the option's `value` |
+| `text` | free text, `minLength` to `maxLength` | string |
+| `number` | a number as people type it — «1.200,5» is 1200.5 — from `min` to `max` | number |
+| `list` | item steps repeated per item, then «another?», from `minItems` | the items |
+| `photos` | 1 to `max` photos, ended by a done button | file ids |
+| `summary` | nothing: shows the answers so far and goes on | — |
+| `handoff` | nothing: a button that opens a page of the host's own; the conversation ends there | — |
+
+Every step has an `id` and its `question`, and can be skipped with `skipIf`, a condition over earlier
+answers. Choice, text and number steps can be `optional` (a skip button) or `remember`ed: the host
+keeps the answer for the chat (`guidedRemembered`) and the next conversation offers it as a button.
+Every text the recipient reads — including the explanation for an answer that does not fit — comes
+from the template; only the default commands are Spanish: `/atras`, `/cancelar`, `/resumen`.
+
+```ts
+import type { GuidedTemplate } from "data-collection-link";
+
+export const dispatch: GuidedTemplate = {
+  key: "dispatch",
+  locale: "es-CO",                       // how numbers and coordinates are written back
+  texts: { invalid: "No entendí esa respuesta.", cancelled: "Cancelé el borrador.", useRemembered: "Usar: {value}" },
+  steps: [
+    { id: "where", type: "location", question: "Comparte tu ubicación.", button: "📍 Compartir ubicación",
+      alternatives: ["No puedo compartirla"], resolver: "territory",
+      confirm: { question: "Estás en {latitude} {longitude}: barrio {barrio}. ¿Es el lugar?", yes: "Sí", no: "No" } },
+    { id: "district", type: "choice", question: "¿Comuna o corregimiento?", catalog: "districts", columns: 3,
+      skipIf: { answer: "where.status", equals: "confirmed" } },
+    { id: "origin", type: "choice", question: "¿Desde qué punto sale?", catalog: "origins", remember: true },
+    { id: "items", type: "list", question: "Ahora los artículos.",
+      more: { question: "Llevas {count}. ¿Otro?", add: "Agregar otro", done: "Listo" },
+      steps: [
+        { id: "category", type: "choice", question: "Artículo {n}: ¿categoría?", catalog: "categories", columns: 2 },
+        { id: "quantity", type: "number", question: "¿Cuántos?", positive: true },
+      ] },
+    { id: "photos", type: "photos", question: "Manda las fotos, hasta {max}.", max: 12, done: "Listo" },
+    { id: "recipient", type: "handoff", question: "Quien recibe se llena en una pantalla protegida.",
+      button: "Completar", link: "recipient" },
+  ],
+};
+```
+
+In the Telegram webhook, after `recordMessage` said the message is new:
+
+```ts
+import { advance, startGuided, renderTelegram, type GuidedContext } from "data-collection-link";
+
+const ctx: GuidedContext = {
+  catalogs: await catalogs(),                          // { districts: [{ value, label }], … }
+  remembered: await rememberedFor(m.from),             // what guidedRemembered returned last time
+  resolvers: { territory: ({ latitude, longitude }) => db.placeAt(latitude, longitude) },
+  links: { recipient: recipientPageUrl(draft) },       // https, carrying your own credential
+};
+const saved = await db.conversationFor(m.from);        // GuidedState | null: plain JSON
+const { state, outputs } = saved ? await advance(saved, dispatch, m, ctx) : await startGuided(dispatch, ctx);
+await db.saveConversation(m.from, state);              // save first: a lost reply is resent on /start
+await renderTelegram(telegramConfig(), m.from, outputs);
+// state.status: "active", "handed_off" (close it when the page confirms), "completed" or "cancelled".
+// guidedAnswers(state) gives the answers by step id for your submission.
+```
+
+- **One message at a time per chat.** An album arrives as several updates at once; handled in
+  parallel on the same saved state, one photo is lost. Serialize per chat, or save with a version
+  check and retry.
+- **The state is only the answers**, and where the conversation stands: no chat id, no token, no
+  URL. Photos are file ids, their captions dropped. A location the recipient says is not the place
+  is dropped, from the history kept for `/atras` too.
+- **`/atras` returns to the previous question actually asked**, skipping what `skipIf` skipped, and
+  drops the answers given since. `/start` — the link opened again — repeats the current question.
+- **A button from an earlier question is not an answer.** Its data names its step, so a tap on an
+  old keyboard repeats the current question instead.
+- **Button data is 64 bytes**, not characters. `validateGuided(template, { catalogs })` in a test,
+  with the real catalogs, checks every option; `sendChoices` refuses an oversize button before
+  calling Telegram.
+
+### Personal data in a guided conversation
+
+Every answer typed or tapped in the chat is a message to a bot, kept on Telegram's servers and not
+end-to-end encrypted (see [Personal data](#personal-data)). **Ask in the chat only what is not
+personal** — places, categories, quantities, photos of goods. What is personal — the name, ID number
+or phone of the person receiving, a signed record — goes through a **`handoff`** step: a page of your
+own, opened inside Telegram, that sends what is typed in it straight to your server. The library
+cannot tell a personal question from another; that is the template author's call, reviewed like code.
+A photo can show a face: say what to photograph.
+
+---
+
 ## Static or dynamic definitions
 
 A `Form` is data, so it can live in two places. The library supports both; the cost is in the host.
@@ -405,7 +501,8 @@ Some forms do not fit a chat: a list of items, photos per section, an offline qu
 chat is only the door. `sendWebApp(cfg, { chatId, text, button: { text, url } })` answers the
 `/start <token>` with a button that opens the host application's own web form inside Telegram,
 carrying the same token. The form validates the token; the bot only delivers it. Telegram opens only
-`https` pages this way, and `sendWebApp` refuses anything else before calling the API.
+`https` pages this way, and `sendWebApp` refuses anything else before calling the API. A guided
+conversation ends in the same kind of page with its `handoff` step.
 
 ### Closing detection
 
@@ -450,6 +547,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Status
 
-`0.4.x`. One consumer in integration on WhatsApp, no production traffic; the Telegram channel is
-covered by tests and has not met a real bot yet. The API surface may change: it is validated by the
-second use case, not the first.
+`0.6.x`. One consumer in integration on WhatsApp, no production traffic; the Telegram channel and
+the guided conversation are covered by tests and have not met a real bot yet. The API surface may
+change: it is validated by the second use case, not the first.
