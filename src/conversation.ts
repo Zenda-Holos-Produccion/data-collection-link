@@ -156,7 +156,10 @@ export async function processInbound(deps: Deps, form: Form, m: InboundMessage):
       channel: m.channel,
       messageId: m.id,
       direction: "inbound",
-      type: m.type,
+      // A shared location and a button tap are not reports in a free-form
+      // conversation. They are recorded as `other` — a location already was,
+      // before the channel read it — so `Repository` keeps the types it knows.
+      type: m.type === "location" || m.type === "choice" ? "other" : m.type,
       text: m.text ?? null,
       occurredAt: m.occurredAt ?? null,
     });

@@ -20,7 +20,15 @@ export type {
   WhatsAppTemplate,
 } from "./types.js";
 
-export type { Channel, HeaderReader, InboundMessage, InvitationResult, Media, SendResult } from "./channel.js";
+export type {
+  Channel,
+  HeaderReader,
+  InboundLocation,
+  InboundMessage,
+  InvitationResult,
+  Media,
+  SendResult,
+} from "./channel.js";
 
 export {
   downloadMedia,
@@ -35,10 +43,14 @@ export {
 } from "./whatsapp.js";
 
 export {
+  CALLBACK_DATA_LIMIT,
   TELEGRAM_TEXT_LIMIT,
+  answerCallback,
   downloadFile,
   extractUpdate,
   isValidSecret,
+  requestLocation,
+  sendChoices,
   sendMessage,
   setWebhook,
   sendWebApp,

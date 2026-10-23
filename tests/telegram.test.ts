@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadFile, extractUpdate, isValidSecret, sendMessage, sendWebApp, setWebhook, telegramChannel } from "../src/telegram.js";
+import {
+  answerCallback,
+  downloadFile,
+  extractUpdate,
+  isValidSecret,
+  requestLocation,
+  sendChoices,
+  sendMessage,
+  sendWebApp,
+  setWebhook,
+  telegramChannel,
+} from "../src/telegram.js";
 import type { Form } from "../src/types.js";
 
 /**
@@ -49,6 +60,54 @@ describe("reading updates", () => {
     expect(extractUpdate(update({ chat: { id: -100, type: "group" }, text: "hi" }))).toEqual([]);
     for (const junk of [null, {}, { edited_message: {} }, { message: {} }]) expect(extractUpdate(junk)).toEqual([]);
   });
+
+  it("5b · a shared location, with the accuracy the device reported", () => {
+    expect(extractUpdate(update({ location: { latitude: 3.4516, longitude: -76.532, horizontal_accuracy: 18.5 } }))).toEqual([
+      {
+        channel: "telegram",
+        id: "77:5",
+        from: "77",
+        type: "location",
+        text: null,
+        location: { latitude: 3.4516, longitude: -76.532, accuracyMeters: 18.5 },
+        occurredAt: new Date(1_760_000_000_000).toISOString(),
+      },
+    ]);
+    // Without an accuracy, the key is absent rather than undefined: the
+    // message stays equal to itself through JSON.
+    const [m] = extractUpdate(update({ location: { latitude: 3.45, longitude: -76.53 } }));
+    expect(m?.location).toStrictEqual({ latitude: 3.45, longitude: -76.53 });
+  });
+
+  it("5c · a button tap is a choice from the chat it was sent to, with the id to answer", () => {
+    const tap = (over: Record<string, unknown>) => ({
+      update_id: 2,
+      callback_query: {
+        id: "4382bfdwdsb323b2d9",
+        from: { id: 77 },
+        message: { message_id: 10, date: 1_760_000_000, chat: { id: 77, type: "private" } },
+        data: "punto:petronio",
+        ...over,
+      },
+    });
+    expect(extractUpdate(tap({}))).toEqual([
+      {
+        channel: "telegram",
+        id: "77:callback:4382bfdwdsb323b2d9",
+        from: "77",
+        type: "choice",
+        text: null,
+        choice: "punto:petronio",
+        callbackId: "4382bfdwdsb323b2d9",
+        occurredAt: null,
+      },
+    ]);
+    // Only private chats, as with messages; a tap without data, or on a
+    // message Telegram no longer shows, carries nothing to act on.
+    expect(extractUpdate(tap({ message: { message_id: 10, chat: { id: -100, type: "group" } } }))).toEqual([]);
+    expect(extractUpdate(tap({ data: undefined }))).toEqual([]);
+    expect(extractUpdate(tap({ message: undefined }))).toEqual([]);
+  });
 });
 
 describe("webhook authentication", () => {
@@ -68,6 +127,16 @@ describe("webhook authentication", () => {
     const spy = vi.spyOn(globalThis, "fetch");
     expect(await setWebhook({ ...cfg, secretToken: undefined }, "https://x/api")).toMatchObject({ ok: false });
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("8b · setWebhook asks for messages and button taps, nothing else", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: true }));
+    expect(await setWebhook(cfg, "https://pmu.example/api/telegram/webhook")).toEqual({ ok: true });
+    expect(JSON.parse((spy.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({
+      url: "https://pmu.example/api/telegram/webhook",
+      secret_token: "s3cret",
+      allowed_updates: ["message", "callback_query"],
+    });
   });
 });
 
@@ -114,6 +183,95 @@ describe("Bot API calls", () => {
 
   it("12 · without a token, calls report instead of throwing", async () => {
     expect(await sendMessage({ ...cfg, token: "" }, { chatId: "77", text: "x" })).toMatchObject({ ok: false });
+  });
+
+  it("12b · sendMessage can take away a reply keyboard", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: { message_id: 3 } }));
+    await sendMessage(cfg, { chatId: "77", text: "Gracias", removeKeyboard: true });
+    expect(JSON.parse((spy.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({
+      chat_id: "77",
+      text: "Gracias",
+      reply_markup: { remove_keyboard: true },
+    });
+  });
+});
+
+const body = (spy: { mock: { calls: unknown[][] } }, call = 0) =>
+  JSON.parse((spy.mock.calls[call]?.[1] as RequestInit).body as string);
+
+describe("buttons and locations", () => {
+  it("15 · sendChoices sends an inline keyboard, row by row", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: { message_id: 6 } }));
+    const r = await sendChoices(cfg, {
+      chatId: "77",
+      text: "¿Desde qué punto sale?",
+      rows: [[{ text: "Petronio Álvarez", data: "punto:petronio" }, { text: "Coliseo", data: "punto:coliseo" }], [], [{ text: "Omitir", data: "punto!skip" }]],
+    });
+    expect(r).toEqual({ ok: true, messageId: "77:6" });
+    expect(spy.mock.calls[0]?.[0]).toBe("https://api.telegram.org/bot123:SECRET-BOT-TOKEN/sendMessage");
+    expect(body(spy)).toEqual({
+      chat_id: "77",
+      text: "¿Desde qué punto sale?",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "Petronio Álvarez", callback_data: "punto:petronio" }, { text: "Coliseo", callback_data: "punto:coliseo" }],
+          [{ text: "Omitir", callback_data: "punto!skip" }],
+        ],
+      },
+    });
+  });
+
+  it("16 · sendChoices refuses data over 64 bytes — counted in bytes — without calling Telegram", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    // 40 characters, 80 bytes: "ñ" takes two.
+    const long = "ñ".repeat(40);
+    const r = await sendChoices(cfg, { chatId: "77", text: "x", rows: [[{ text: "Ok", data: "a" }, { text: "Largo", data: long }]] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/"Largo".*80 bytes/);
+    expect(await sendChoices(cfg, { chatId: "77", text: "x", rows: [[{ text: "Vacío", data: "" }]] })).toMatchObject({ ok: false });
+    expect(await sendChoices(cfg, { chatId: "77", text: "x", rows: [[]] })).toMatchObject({ ok: false });
+    expect(await sendChoices(cfg, { chatId: "77", text: "x", rows: [[{ text: " ", data: "a" }]] })).toMatchObject({ ok: false });
+    expect(spy).not.toHaveBeenCalled();
+    // Exactly 64 bytes is accepted.
+    spy.mockResolvedValue(Response.json({ ok: true, result: { message_id: 1 } }));
+    expect(await sendChoices(cfg, { chatId: "77", text: "x", rows: [[{ text: "Ok", data: "ñ".repeat(32) }]] })).toMatchObject({ ok: true });
+  });
+
+  it("17 · requestLocation asks with Telegram's keyboard, plus the alternatives", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: { message_id: 7 } }));
+    const r = await requestLocation(cfg, {
+      chatId: "77",
+      text: "Comparte tu ubicación",
+      button: "📍 Compartir ubicación",
+      alternatives: ["No puedo compartirla"],
+    });
+    expect(r).toEqual({ ok: true, messageId: "77:7" });
+    expect(body(spy)).toEqual({
+      chat_id: "77",
+      text: "Comparte tu ubicación",
+      reply_markup: {
+        keyboard: [[{ text: "📍 Compartir ubicación", request_location: true }], [{ text: "No puedo compartirla" }]],
+        one_time_keyboard: true,
+        resize_keyboard: true,
+      },
+    });
+  });
+
+  it("18 · answerCallback stops the spinner, with or without a notice", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ ok: true, result: true }));
+    expect(await answerCallback(cfg, "q1")).toEqual({ ok: true });
+    expect(spy.mock.calls[0]?.[0]).toBe("https://api.telegram.org/bot123:SECRET-BOT-TOKEN/answerCallbackQuery");
+    expect(body(spy, 0)).toEqual({ callback_query_id: "q1" });
+    await answerCallback(cfg, "q2", "Guardado");
+    expect(body(spy, 1)).toEqual({ callback_query_id: "q2", text: "Guardado" });
+  });
+
+  it("19 · an expired tap reports Telegram's reason, without the token", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ ok: false, description: "Bad Request: query is too old and response timeout expired" }, { status: 400 }),
+    );
+    const r = await answerCallback(cfg, "q1");
+    expect(r).toEqual({ ok: false, error: "Bad Request: query is too old and response timeout expired" });
   });
 });
 

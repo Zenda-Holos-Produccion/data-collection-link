@@ -174,6 +174,20 @@ describe("closing requirements", () => {
     expect(state).toMatchObject({ reports: 1, photos: 1 });
     expect((await processInbound(d, FORM, text("w4", "3001234567", "LISTO"))).status).toBe("closed");
   });
+
+  it("8b · a location or a button tap is recorded as `other`, and is not a report", async () => {
+    const { repository, state } = fakeRepository({ ...OPEN_CASE, channel: "telegram", address: "77" });
+    const types: string[] = [];
+    const record = repository.recordMessage;
+    repository.recordMessage = async (m) => (types.push(m.type), record(m));
+    const d = deps(repository, { telegram: fakeChannel("telegram").channel });
+    const where: InboundMessage = { channel: "telegram", id: "77:3", from: "77", type: "location", text: null, location: { latitude: 3.45, longitude: -76.53 } };
+    const tap: InboundMessage = { channel: "telegram", id: "77:callback:q1", from: "77", type: "choice", text: null, choice: "x:y", callbackId: "q1" };
+    expect((await processInbound(d, FORM, where)).status).toBe("stored");
+    expect((await processInbound(d, FORM, tap)).status).toBe("stored");
+    expect(types).toEqual(["other", "other"]);
+    expect(state).toMatchObject({ reports: 0, photos: 0 });
+  });
 });
 
 describe("invite over WhatsApp", () => {

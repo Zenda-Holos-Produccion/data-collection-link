@@ -29,19 +29,40 @@ export type InvitationResult = {
   error?: string;
 };
 
+/** A point shared from the recipient's device. */
+export type InboundLocation = {
+  latitude: number;
+  longitude: number;
+  /** The radius of uncertainty the device reported, in meters, when it reported one. */
+  accuracyMeters?: number;
+};
+
 export type InboundMessage = {
   channel: ChannelName;
   /** Unique within the channel: the deduplication key. */
   id: string;
   /** The sender, already in the form `Case.address` stores. */
   from: string;
-  type: "text" | "image" | "other";
+  /**
+   * `location` and `choice` come from Telegram only: a shared location, and a
+   * tap on a button sent with `sendChoices`. WhatsApp reports neither.
+   */
+  type: "text" | "image" | "location" | "choice" | "other";
   /** For an image, its caption. */
   text?: string | null;
   mediaId?: string | null;
   occurredAt?: string | null;
   /** Telegram: the payload of `/start <payload>`, sent when the link is opened. */
   start?: string | null;
+  /** For `location`: the point shared. */
+  location?: InboundLocation | null;
+  /** For `choice`: the `data` of the button tapped. */
+  choice?: string | null;
+  /**
+   * For `choice`: the id Telegram expects back in `answerCallback`. Until it
+   * is answered, the button shows a spinner.
+   */
+  callbackId?: string | null;
 };
 
 export type Media = { ok: true; bytes: Uint8Array; contentType: string } | { ok: false; error: string };

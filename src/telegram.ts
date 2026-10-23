@@ -76,13 +76,104 @@ export function telegramLink(cfg: TelegramConfig, token: string): string {
   return `https://t.me/${cfg.username}?start=${token}`;
 }
 
-/** Plain text to a chat. Message ids are unique per chat, so the id is `<chat>:<message>`. */
-export async function sendMessage(cfg: TelegramConfig, m: { chatId: string; text: string }): Promise<SendResult> {
+/**
+ * Plain text to a chat. Message ids are unique per chat, so the id is `<chat>:<message>`.
+ *
+ * `removeKeyboard` takes away a reply keyboard left open by `requestLocation`.
+ * Sending it when none is open does nothing.
+ */
+export async function sendMessage(
+  cfg: TelegramConfig,
+  m: { chatId: string; text: string; removeKeyboard?: boolean },
+): Promise<SendResult> {
   const r = await call<{ message_id: number }>(cfg, "sendMessage", {
     chat_id: m.chatId,
     text: m.text.slice(0, TELEGRAM_TEXT_LIMIT),
+    ...(m.removeKeyboard ? { reply_markup: { remove_keyboard: true } } : {}),
   });
   return r.ok ? { ok: true, messageId: `${m.chatId}:${r.result.message_id}` } : { ok: false, error: r.error };
+}
+
+/** Telegram's limit for a button's `callback_data`, in bytes — not characters. */
+export const CALLBACK_DATA_LIMIT = 64;
+
+const utf8Length = (s: string) => new TextEncoder().encode(s).length;
+
+/**
+ * A message with buttons under it (an inline keyboard). A tap arrives as an
+ * update of type `choice` carrying the button's `data`, and must be answered
+ * with `answerCallback`.
+ *
+ * `data` is limited to 1–64 **bytes**: an accented letter takes two. Telegram
+ * rejects the whole message when one button exceeds it, so this refuses it
+ * first, naming the button, without calling the API.
+ */
+export async function sendChoices(
+  cfg: TelegramConfig,
+  m: { chatId: string; text: string; rows: { text: string; data: string }[][] },
+): Promise<SendResult> {
+  const rows = m.rows.filter((row) => row.length > 0);
+  if (rows.length === 0) return { ok: false, error: "A choice needs at least one button." };
+  for (const button of rows.flat()) {
+    if (!button.text.trim()) return { ok: false, error: "Every button needs a text." };
+    const bytes = utf8Length(button.data);
+    if (bytes < 1 || bytes > CALLBACK_DATA_LIMIT) {
+      return {
+        ok: false,
+        error: `Button "${button.text}": its data is ${bytes} bytes; Telegram accepts 1 to ${CALLBACK_DATA_LIMIT}.`,
+      };
+    }
+  }
+  const r = await call<{ message_id: number }>(cfg, "sendMessage", {
+    chat_id: m.chatId,
+    text: m.text.slice(0, TELEGRAM_TEXT_LIMIT),
+    reply_markup: {
+      inline_keyboard: rows.map((row) => row.map((b) => ({ text: b.text.slice(0, 64), callback_data: b.data }))),
+    },
+  });
+  return r.ok ? { ok: true, messageId: `${m.chatId}:${r.result.message_id}` } : { ok: false, error: r.error };
+}
+
+/**
+ * Asks for the recipient's location with Telegram's own keyboard: one button
+ * that shares it, and text buttons for those who cannot — Telegram Desktop
+ * does not share locations, and a phone may have it turned off. A tapped
+ * alternative arrives as a text message with the button's text.
+ *
+ * The keyboard hides after one use; `sendMessage` with `removeKeyboard`
+ * takes it away.
+ */
+export async function requestLocation(
+  cfg: TelegramConfig,
+  m: { chatId: string; text: string; button: string; alternatives?: string[] },
+): Promise<SendResult> {
+  const r = await call<{ message_id: number }>(cfg, "sendMessage", {
+    chat_id: m.chatId,
+    text: m.text.slice(0, TELEGRAM_TEXT_LIMIT),
+    reply_markup: {
+      keyboard: [[{ text: m.button, request_location: true }], ...(m.alternatives ?? []).map((text) => [{ text }])],
+      one_time_keyboard: true,
+      resize_keyboard: true,
+    },
+  });
+  return r.ok ? { ok: true, messageId: `${m.chatId}:${r.result.message_id}` } : { ok: false, error: r.error };
+}
+
+/**
+ * Answers a button tap. Until it is answered the button shows a spinner;
+ * `text`, if given, appears briefly over the chat (up to 200 characters).
+ * Telegram refuses an answer after some seconds, so answer before slow work.
+ */
+export async function answerCallback(
+  cfg: TelegramConfig,
+  callbackId: string,
+  text?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await call<boolean>(cfg, "answerCallbackQuery", {
+    callback_query_id: callbackId,
+    ...(text ? { text: text.slice(0, 200) } : {}),
+  });
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 /**
@@ -165,39 +256,77 @@ export function isValidSecret(cfg: TelegramConfig, header: string | null | undef
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Registers the webhook, with the secret and only the updates this library reads. */
+/**
+ * Registers the webhook, with the secret and only the updates this library
+ * reads: messages, and taps on the buttons `sendChoices` sends.
+ */
 export async function setWebhook(cfg: TelegramConfig, url: string): Promise<{ ok: boolean; error?: string }> {
   if (!cfg.secretToken) return { ok: false, error: "Set `secretToken` first: the webhook would accept anyone." };
   const r = await call<boolean>(cfg, "setWebhook", {
     url,
     secret_token: cfg.secretToken,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
   });
   return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
+type TelegramChat = { id?: number | string; type?: string };
+
 type TelegramMessage = {
   message_id?: number;
   date?: number;
-  chat?: { id?: number | string; type?: string };
+  chat?: TelegramChat;
   text?: string;
   caption?: string;
   photo?: { file_id?: string; file_size?: number }[];
   document?: { file_id?: string; mime_type?: string };
+  location?: { latitude?: number; longitude?: number; horizontal_accuracy?: number };
+};
+
+type TelegramCallbackQuery = {
+  id?: string;
+  data?: string;
+  message?: { message_id?: number; chat?: TelegramChat };
 };
 
 /**
- * The message inside a webhook `Update`.
+ * The message inside a webhook `Update`, or the tap on a button.
  *
  * Only private chats count: a bot added to a group would otherwise turn every
- * group message into a report. Edits, channel posts and button callbacks are
- * not read (`setWebhook` does not even ask for them).
+ * group message into a report. Edits and channel posts are not read
+ * (`setWebhook` does not even ask for them).
  *
  * A photo arrives in several sizes; the largest is kept. A photo sent "as a
  * file" arrives as a document and is kept if its type is an image.
+ *
+ * A shared location becomes a `location` message. A tap on a button sent with
+ * `sendChoices` becomes a `choice` carrying the button's data and the
+ * `callbackId` to answer; it comes from the chat the button was sent to. A tap
+ * has no time of its own — the message's date is when the button was sent —
+ * so `occurredAt` is null. Its id is `<chat>:callback:<query id>`, which
+ * cannot collide with a message's `<chat>:<message>`.
  */
 export function extractUpdate(payload: unknown): InboundMessage[] {
-  const m = (payload as { message?: TelegramMessage } | null)?.message;
+  const update = payload as { message?: TelegramMessage; callback_query?: TelegramCallbackQuery } | null;
+  const query = update?.callback_query;
+  if (query) {
+    const chat = query.message?.chat;
+    if (!query.id || !query.data || chat?.id === undefined || chat.type !== "private") return [];
+    return [
+      {
+        channel: "telegram",
+        id: `${chat.id}:callback:${query.id}`,
+        from: String(chat.id),
+        occurredAt: null,
+        type: "choice",
+        text: null,
+        choice: query.data,
+        callbackId: query.id,
+      },
+    ];
+  }
+
+  const m = update?.message;
   if (!m?.message_id || m.chat?.id === undefined || m.chat?.type !== "private") return [];
   const chat = String(m.chat.id);
   const base = {
@@ -213,6 +342,21 @@ export function extractUpdate(payload: unknown): InboundMessage[] {
   }
   if (m.document?.file_id && m.document.mime_type?.startsWith("image/")) {
     return [{ ...base, type: "image", text: m.caption ?? null, mediaId: m.document.file_id }];
+  }
+  const { latitude, longitude, horizontal_accuracy } = m.location ?? {};
+  if (typeof latitude === "number" && typeof longitude === "number") {
+    return [
+      {
+        ...base,
+        type: "location",
+        text: null,
+        location: {
+          latitude,
+          longitude,
+          ...(typeof horizontal_accuracy === "number" ? { accuracyMeters: horizontal_accuracy } : {}),
+        },
+      },
+    ];
   }
   if (typeof m.text === "string") {
     const start = /^\/start(?:@\w+)?(?:\s+(\S+))?\s*$/.exec(m.text);
