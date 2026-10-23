@@ -43,7 +43,15 @@ import type { FormIssue } from "./form.js";
 
 export type GuidedScalar = string | number | boolean | null;
 
-export type GuidedOption = { value: string; label: string };
+export type GuidedOption = {
+  value: string;
+  label: string;
+  /**
+   * How this option reads in a summary, instead of its label. An empty string
+   * leaves the line out: a «kilos or tonnes» choice whose number says it all.
+   */
+  summary?: string;
+};
 
 /**
  * A condition over earlier answers. `answer` is a step id, or a path into an
@@ -74,6 +82,11 @@ type StepCommon = {
 type AskedStep = StepCommon & {
   /** How the answer reads in a summary. Defaults to the id. */
   label?: string;
+  /**
+   * The value's side of its summary line, with `{value}` for the answer as it
+   * displays: `"{value} kg"`. An empty string leaves the line out.
+   */
+  summaryAs?: string;
   /**
    * Said before the question again when an input does not fit the step — a
    * photo when a text is asked, a number out of range. Defaults to
@@ -428,8 +441,12 @@ function optionsOf(step: GuidedChoiceStep, ctx: GuidedContext): GuidedOption[] {
 
 /** For display only: an option that left the catalog still reads as its value. */
 function optionLabel(step: GuidedChoiceStep, value: string, ctx: GuidedContext): string {
+  return optionOf(step, value, ctx)?.label ?? value;
+}
+
+function optionOf(step: GuidedChoiceStep, value: string, ctx: GuidedContext): GuidedOption | undefined {
   const options = step.options ?? (step.catalog !== undefined ? ctx.catalogs?.[step.catalog] : undefined) ?? [];
-  return options.find((o) => o.value === value)?.label ?? value;
+  return options.find((o) => o.value === value);
 }
 
 const itemsOf = (s: GuidedState, step: GuidedListStep) => (s.answers[step.id] as GuidedItem[] | undefined) ?? [];
@@ -693,8 +710,17 @@ function summarize(t: GuidedTemplate, s: GuidedState, ctx: GuidedContext, header
       case "photos":
         lines.push(`${label}: ${(value as string[]).length}`);
         break;
-      default:
-        lines.push(`${label}: ${display(t, step, value as string | number, ctx)}`);
+      default: {
+        const shown = display(t, step, value as string | number, ctx);
+        const option = step.type === "choice" ? optionOf(step, String(value), ctx) : undefined;
+        const text =
+          option?.summary !== undefined
+            ? option.summary
+            : step.summaryAs !== undefined
+              ? fill(step.summaryAs, { value: shown })
+              : shown;
+        if (text !== "") lines.push(`${label}: ${text}`);
+      }
     }
   }
   return [header, lines.join("\n")].filter(Boolean).join("\n\n") || "—";

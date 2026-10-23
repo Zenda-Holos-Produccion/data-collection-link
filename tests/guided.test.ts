@@ -930,3 +930,43 @@ describe("other shapes", () => {
     await expect(advance(c.state, DESPACHO, text("Comuna 18"), {})).rejects.toThrow(/catalog "divisiones"/);
   });
 });
+
+describe("how an answer reads in the summary", () => {
+  const PESO: GuidedTemplate = {
+    key: "peso",
+    texts: { invalid: "?", cancelled: "x" },
+    steps: [
+      {
+        id: "peso_en",
+        type: "choice",
+        question: "¿Cómo lo sabes?",
+        label: "Peso",
+        options: [
+          { value: "kg", label: "En kilos", summary: "" },
+          { value: "t", label: "En toneladas", summary: "" },
+          { value: "no", label: "No puedo calcularlo", summary: "no se pudo calcular" },
+        ],
+      },
+      { id: "peso_kg", type: "number", question: "¿Cuántos kilos?", label: "Peso", summaryAs: "{value} kg", skipIf: { not: { answer: "peso_en", equals: "kg" } } },
+      { id: "resumen", type: "summary", question: "Esto es lo que llevas:" },
+    ],
+  };
+  const summaryAfter = async (inputs: InboundMessage[]) => {
+    let { state } = await startGuided(PESO, {});
+    let outputs: GuidedOutput[] = [];
+    for (const input of inputs) ({ state, outputs } = await advance(JSON.parse(JSON.stringify(state)), PESO, input, {}));
+    return textOf(outputs).join("\n");
+  };
+
+  it("a choice whose number says it all leaves its line out, and the number reads with its unit", async () => {
+    const r = await summaryAfter([tap("peso_en:kg"), text("50")]);
+    expect(r).toContain("Peso: 50 kg");
+    expect(r).not.toContain("En kilos");
+  });
+
+  it("an option can read differently in the summary than on its button", async () => {
+    const r = await summaryAfter([tap("peso_en:no")]);
+    expect(r).toContain("Peso: no se pudo calcular");
+    expect(r).not.toContain("No puedo calcularlo");
+  });
+});

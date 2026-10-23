@@ -407,6 +407,8 @@ A photo can show a face: say what to photograph.
 
 ---
 
+**How an answer reads in the summary.** A step's `summaryAs` sets its value's side of the line, with `{value}`: `"{value} kg"`. An option's `summary` replaces its label there. An empty string leaves the line out, which suits a «kilos or tonnes» choice whose number already says it all.
+
 ## Static or dynamic definitions
 
 A `Form` is data, so it can live in two places. The library supports both; the cost is in the host.
